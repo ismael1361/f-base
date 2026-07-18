@@ -1,0 +1,26 @@
+# Logs and temporary files
+*.log
+*.tmp
+
+# Environment variables and secrets (CRITICAL)
+.env
+.env.local
+
+# Dependency directories
+node_modules/
+/venv/
+.pnp/
+
+# Build and output folders
+dist/
+build/
+out/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+.idea/
+*.suo
