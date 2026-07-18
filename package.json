@@ -1,9 +1,10 @@
 {
   "name": "f-base",
   "version": "0.0.1",
+  "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "ts-node src/index.ts"
   },
   "keywords": [],
   "author": "",

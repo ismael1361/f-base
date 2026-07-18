@@ -102,7 +102,7 @@ build_unix() {
     # Silencia falso positivo do GCC 12+ no sqlite3 amalgamado
     WARN_FLAGS="-Wno-stringop-overread"
     
-    OUTPUT_FILE="$SRC_DIR/${OUTPUT_NAME}${EXT}"
+    OUTPUT_FILE="$SRC_DIR/bin/${OUTPUT_NAME}${EXT}"
     
     echo "${YELLOW}Compilando...${NC}"
     
@@ -125,7 +125,7 @@ build_unix() {
 build_windows_msvc() {
     echo "${BLUE}Iniciando build para Windows (MSVC)...${NC}"
     
-    OUTPUT_FILE="$SRC_DIR/${OUTPUT_NAME}.dll"
+    OUTPUT_FILE="$SRC_DIR/bin/${OUTPUT_NAME}.dll"
     
     echo "${YELLOW}Compilando com MSVC...${NC}"
     
@@ -146,7 +146,7 @@ build_windows_msvc() {
 build_windows_mingw() {
     echo "${BLUE}Iniciando build para Windows (MinGW/GCC)...${NC}"
     
-    OUTPUT_FILE="$SRC_DIR/${OUTPUT_NAME}.dll"
+    OUTPUT_FILE="$SRC_DIR/bin/${OUTPUT_NAME}.dll"
     
     echo "${YELLOW}Compilando com GCC...${NC}"
     

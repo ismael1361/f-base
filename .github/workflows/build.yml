@@ -27,13 +27,13 @@ jobs:
             sqlite/sqlite3.c \
             -o hierarchical_engine.so \
             -lpthread -ldl -lm
-        working-directory: src/hierarchical_engine  # ← ADICIONE ISSO
+        working-directory: hierarchical_engine  # ← ADICIONE ISSO
       
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-linux
-          path: src/hierarchical_engine/hierarchical_engine.so  # ← AJUSTE O PATH
+          path: hierarchical_engine/hierarchical_engine.so  # ← AJUSTE O PATH
 
   build-macos:
     runs-on: macos-latest
@@ -50,13 +50,13 @@ jobs:
             sqlite/sqlite3.c \
             -o hierarchical_engine.dylib \
             -undefined suppress -flat_namespace
-        working-directory: src/hierarchical_engine  # ← ADICIONE ISSO
+        working-directory: hierarchical_engine  # ← ADICIONE ISSO
       
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-macos
-          path: src/hierarchical_engine/hierarchical_engine.dylib  # ← AJUSTE O PATH
+          path: hierarchical_engine/hierarchical_engine.dylib  # ← AJUSTE O PATH
 
   build-windows:
     runs-on: windows-latest
@@ -74,10 +74,10 @@ jobs:
             sqlite/sqlite3.c `
             /Fehierarchical_engine.dll
         shell: pwsh
-        working-directory: src/hierarchical_engine  # ← ADICIONE ISSO
+        working-directory: hierarchical_engine  # ← ADICIONE ISSO
       
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-windows
-          path: src/hierarchical_engine/hierarchical_engine.dll  # ← AJUSTE O PATH
+          path: hierarchical_engine/hierarchical_engine.dll  # ← AJUSTE O PATH
