@@ -99,11 +99,14 @@ build_unix() {
         SHARED_FLAGS="-shared -fPIC"
     fi
     
+    # Silencia falso positivo do GCC 12+ no sqlite3 amalgamado
+    WARN_FLAGS="-Wno-stringop-overread"
+    
     OUTPUT_FILE="$SRC_DIR/${OUTPUT_NAME}${EXT}"
     
     echo "${YELLOW}Compilando...${NC}"
     
-    $CC $SHARED_FLAGS -O3 \
+    $CC $SHARED_FLAGS $WARN_FLAGS -O3 \
         -I"$SQLITE_DIR" \
         -I"$SRC_DIR" \
         "$SRC_DIR/hierarchical_engine.c" \
@@ -147,7 +150,10 @@ build_windows_mingw() {
     
     echo "${YELLOW}Compilando com GCC...${NC}"
     
-    $CC -shared -O3 \
+    # Silencia falso positivo do GCC 12+ no sqlite3 amalgamado
+    WARN_FLAGS="-Wno-stringop-overread"
+    
+    $CC -shared -O3 $WARN_FLAGS \
         -I"$SQLITE_DIR" \
         -I"$SRC_DIR" \
         "$SRC_DIR/hierarchical_engine.c" \

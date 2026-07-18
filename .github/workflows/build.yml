@@ -22,17 +22,18 @@ jobs:
           gcc -shared -fPIC -O3 \
             -I./sqlite \
             -I. \
-            hierarchical_engine/hierarchical_engine.c \
+            hierarchical_engine.c \
             yyjson.c \
-            hierarchical_engine/sqlite/sqlite3.c \
-            -o hierarchical_engine/hierarchical_engine.so \
+            sqlite/sqlite3.c \
+            -o hierarchical_engine.so \
             -lpthread -ldl -lm
+        working-directory: src/hierarchical_engine  # ← ADICIONE ISSO
       
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-linux
-          path: hierarchical_engine/hierarchical_engine.so
+          path: src/hierarchical_engine/hierarchical_engine.so  # ← AJUSTE O PATH
 
   build-macos:
     runs-on: macos-latest
@@ -44,17 +45,18 @@ jobs:
           clang -dynamiclib -O3 \
             -I./sqlite \
             -I. \
-            hierarchical_engine/hierarchical_engine.c \
+            hierarchical_engine.c \
             yyjson.c \
-            hierarchical_engine/sqlite/sqlite3.c \
-            -o hierarchical_engine/hierarchical_engine.dylib \
+            sqlite/sqlite3.c \
+            -o hierarchical_engine.dylib \
             -undefined suppress -flat_namespace
+        working-directory: src/hierarchical_engine  # ← ADICIONE ISSO
       
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-macos
-          path: hierarchical_engine/hierarchical_engine.dylib
+          path: src/hierarchical_engine/hierarchical_engine.dylib  # ← AJUSTE O PATH
 
   build-windows:
     runs-on: windows-latest
@@ -67,34 +69,15 @@ jobs:
       - name: Build for Windows
         run: |
           cl /LD /O2 /I./sqlite /I. `
-            hierarchical_engine/hierarchical_engine.c `
+            hierarchical_engine.c `
             yyjson.c `
-            hierarchical_engine/sqlite/sqlite3.c `
-            /Fehierarchical_engine/hierarchical_engine.dll
+            sqlite/sqlite3.c `
+            /Fehierarchical_engine.dll
         shell: pwsh
+        working-directory: src/hierarchical_engine  # ← ADICIONE ISSO
       
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-windows
-          path: hierarchical_engine/hierarchical_engine.dll
-
-  create-release:
-    needs: [build-linux, build-macos, build-windows]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            artifacts/hierarchical_engine-linux/hierarchical_engine.so
-            artifacts/hierarchical_engine-macos/hierarchical_engine.dylib
-            artifacts/hierarchical_engine-windows/hierarchical_engine.dll
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          path: src/hierarchical_engine/hierarchical_engine.dll  # ← AJUSTE O PATH
