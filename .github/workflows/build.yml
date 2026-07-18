@@ -22,17 +22,17 @@ jobs:
           gcc -shared -fPIC -O3 \
             -I./sqlite \
             -I. \
-            hierarchical_engine.c \
+            hierarchical_engine/hierarchical_engine.c \
             yyjson.c \
-            sqlite/sqlite3.c \
-            -o hierarchical_engine.so \
+            hierarchical_engine/sqlite/sqlite3.c \
+            -o hierarchical_engine/hierarchical_engine.so \
             -lpthread -ldl -lm
       
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-linux
-          path: hierarchical_engine.so
+          path: hierarchical_engine/hierarchical_engine.so
 
   build-macos:
     runs-on: macos-latest
@@ -44,17 +44,17 @@ jobs:
           clang -dynamiclib -O3 \
             -I./sqlite \
             -I. \
-            hierarchical_engine.c \
+            hierarchical_engine/hierarchical_engine.c \
             yyjson.c \
-            sqlite/sqlite3.c \
-            -o hierarchical_engine.dylib \
+            hierarchical_engine/sqlite/sqlite3.c \
+            -o hierarchical_engine/hierarchical_engine.dylib \
             -undefined suppress -flat_namespace
       
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-macos
-          path: hierarchical_engine.dylib
+          path: hierarchical_engine/hierarchical_engine.dylib
 
   build-windows:
     runs-on: windows-latest
@@ -67,17 +67,17 @@ jobs:
       - name: Build for Windows
         run: |
           cl /LD /O2 /I./sqlite /I. `
-            hierarchical_engine.c `
+            hierarchical_engine/hierarchical_engine.c `
             yyjson.c `
-            sqlite/sqlite3.c `
-            /Fehierarchical_engine.dll
+            hierarchical_engine/sqlite/sqlite3.c `
+            /Fehierarchical_engine/hierarchical_engine.dll
         shell: pwsh
       
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-windows
-          path: hierarchical_engine.dll
+          path: hierarchical_engine/hierarchical_engine.dll
 
   create-release:
     needs: [build-linux, build-macos, build-windows]
