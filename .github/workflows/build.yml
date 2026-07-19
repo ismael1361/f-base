@@ -24,7 +24,6 @@ jobs:
             -I. \
             hierarchical_engine.c \
             yyjson.c \
-            sqlite/sqlite3.c \
             -o hierarchical_engine.so \
             -lpthread -ldl -lm
         working-directory: hierarchical_engine  # ← ADICIONE ISSO
@@ -47,7 +46,6 @@ jobs:
             -I. \
             hierarchical_engine.c \
             yyjson.c \
-            sqlite/sqlite3.c \
             -o hierarchical_engine.dylib \
             -undefined suppress -flat_namespace
         working-directory: hierarchical_engine  # ← ADICIONE ISSO
@@ -71,7 +69,6 @@ jobs:
           cl /LD /O2 /I./sqlite /I. `
             hierarchical_engine.c `
             yyjson.c `
-            sqlite/sqlite3.c `
             /Fehierarchical_engine.dll
         shell: pwsh
         working-directory: hierarchical_engine  # ← ADICIONE ISSO

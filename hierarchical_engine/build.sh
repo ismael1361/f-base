@@ -111,7 +111,6 @@ build_unix() {
         -I"$SRC_DIR" \
         "$SRC_DIR/hierarchical_engine.c" \
         "$SRC_DIR/yyjson.c" \
-        "$SQLITE_DIR/sqlite3.c" \
         -o "$OUTPUT_FILE" \
         -lpthread -ldl -lm
     
@@ -133,7 +132,6 @@ build_windows_msvc() {
     cl /LD /O2 /I"$SQLITE_DIR" /I"$SRC_DIR" \
         "$SRC_DIR/hierarchical_engine.c" \
         "$SRC_DIR/yyjson.c" \
-        "$SQLITE_DIR/sqlite3.c" \
         /Fe:"$OUTPUT_FILE"
     
     echo "${GREEN}Build concluído com sucesso!${NC}"
@@ -158,7 +156,6 @@ build_windows_mingw() {
         -I"$SRC_DIR" \
         "$SRC_DIR/hierarchical_engine.c" \
         "$SRC_DIR/yyjson.c" \
-        "$SQLITE_DIR/sqlite3.c" \
         -o "$OUTPUT_FILE"
     
     echo "${GREEN}Build concluído com sucesso!${NC}"

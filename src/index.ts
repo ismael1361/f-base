@@ -1,12 +1,8 @@
 import Database from "better-sqlite3";
 import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // 1. Inicialização do Banco e Schema
-const db = new Database("hierarchical.db", { verbose: console.log });
+const db = new Database("db/hierarchical.db", { verbose: console.log });
 
 // Configurações de Performance (O "Sweet Spot" do SQLite)
 db.pragma("journal_mode = WAL");
@@ -29,9 +25,10 @@ db.exec(`
 
 // 2. Carregamento da Extensão C
 // O caminho deve apontar para o arquivo compilado (.so, .dylib ou .dll)
-const extPath = path.resolve(process.cwd(), "./hierarchical_engine/bin", `libhierarchical_engine.${process.platform === "win32" ? "dll" : process.platform === "darwin" ? "dylib" : "so"}`);
+const extPath = path.resolve(process.cwd(), "./hierarchical_engine/bin", `hierarchical_engine.${process.platform === "win32" ? "dll" : process.platform === "darwin" ? "dylib" : "so"}`);
+console.log(`Tentando carregar extensão C de: ${extPath}`);
 try {
-  db.loadExtension(extPath);
+  db.loadExtension(extPath, "sqlite3_hierarchical_init");
   console.log("✅ Extensão C carregada com sucesso!");
 } catch (err) {
   console.error("❌ Falha ao carregar extensão C:", err);
