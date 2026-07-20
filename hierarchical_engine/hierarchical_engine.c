@@ -2618,7 +2618,7 @@ static void query_json_func(sqlite3_context *context, int argc, sqlite3_value **
 #ifdef _WIN32
 __declspec(dllexport)
 #endif
-int sqlite3_hierarchical_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routines *pApi)
+int sqlite3_extension_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routines *pApi)
 {
     SQLITE_EXTENSION_INIT2(pApi);
 

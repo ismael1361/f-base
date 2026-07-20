@@ -28,7 +28,7 @@ db.exec(`
 const extPath = path.resolve(process.cwd(), "./hierarchical_engine/bin", `hierarchical_engine.${process.platform === "win32" ? "dll" : process.platform === "darwin" ? "dylib" : "so"}`);
 console.log(`Tentando carregar extensão C de: ${extPath}`);
 try {
-  (db as any).loadExtension(extPath, "sqlite3_hierarchical_init");
+  (db as any).loadExtension(extPath);
   console.log("✅ Extensão C carregada com sucesso!");
 } catch (err) {
   console.error("❌ Falha ao carregar extensão C:", err);
