@@ -12,12 +12,32 @@ SRC_DIR=$(cd "$(dirname "$0")" && pwd)
 OUTPUT_NAME="hierarchical_engine"
 SQLITE_DIR="$SRC_DIR/sqlite"
 
-# Cores (funciona na maioria dos terminais modernos)
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Suporte a cores (desabilitado se o terminal não suportar ou $NO_COLOR estiver definido)
+if [ -n "$NO_COLOR" ] || [ ! -t 1 ]; then
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+else
+    case "$TERM" in
+        xterm*|rxvt*|urxvt*|linux*|vt100*|screen*|tmux*|cygwin|cygwin*|msys*)
+            RED='\033[0;31m'
+            GREEN='\033[0;32m'
+            YELLOW='\033[1;33m'
+            BLUE='\033[0;34m'
+            NC='\033[0m'
+            ;;
+        *)
+            # Tenta usar tput como fallback (mais portável)
+            if command -v tput > /dev/null 2>&1 && tput setaf 1 > /dev/null 2>&1; then
+                RED="$(tput setaf 1)"
+                GREEN="$(tput setaf 2)"
+                YELLOW="$(tput setaf 3)"
+                BLUE="$(tput setaf 4)"
+                NC="$(tput sgr0)"
+            else
+                RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+            fi
+            ;;
+    esac
+fi
 
 echo "${BLUE}========================================${NC}"
 echo "${BLUE}Build Script - Hierarchical Engine${NC}"

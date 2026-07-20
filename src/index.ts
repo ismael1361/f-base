@@ -28,7 +28,7 @@ db.exec(`
 const extPath = path.resolve(process.cwd(), "./hierarchical_engine/bin", `hierarchical_engine.${process.platform === "win32" ? "dll" : process.platform === "darwin" ? "dylib" : "so"}`);
 console.log(`Tentando carregar extensão C de: ${extPath}`);
 try {
-  (db as any).loadExtension(extPath);
+  db.loadExtension(extPath);
   console.log("✅ Extensão C carregada com sucesso!");
 } catch (err) {
   console.error("❌ Falha ao carregar extensão C:", err);
@@ -75,11 +75,8 @@ class HierarchicalStore {
    * store.set("/users/100", null); // remove o documento
    * ```
    */
-  public set(docId: string, jsonData: Record<string, unknown> | unknown[] | null): string {
-    // Garante que o path comece com /
-    const normalizedId = docId.startsWith("/") ? docId.slice(1) : docId;
-    const jsonStr = JSON.stringify(jsonData);
-    const row = db.prepare("SELECT set_json(?, ?) as revision").get(normalizedId, jsonStr) as { revision: string } | undefined;
+  public set<T = Record<string, unknown>>(prefix: string, data: T | null): string {
+    const row = db.prepare("SELECT set_json(?, ?) as revision").get(prefix, JSON.stringify(data)) as { revision: string } | undefined;
     return row?.revision ?? "";
   }
 
@@ -118,9 +115,8 @@ class HierarchicalStore {
    * store.update("/people/*", { active: true });
    * ```
    */
-  public update(docId: string, jsonData: Record<string, unknown>): string {
-    const jsonStr = JSON.stringify(jsonData);
-    const row = db.prepare("SELECT update_json(?, ?) as revision").get(docId, jsonStr) as { revision: string } | undefined;
+  public update<T = Record<string, unknown>>(prefix: string, data: T): string {
+    const row = db.prepare("SELECT update_json(?, ?) as revision").get(prefix, JSON.stringify(data)) as { revision: string } | undefined;
     return row?.revision ?? "";
   }
 
@@ -143,8 +139,7 @@ class HierarchicalStore {
    * ```
    */
   public query<T = Record<string, unknown>>(prefix: string, options: QueryOptions = {}): T[] {
-    const queryStr = JSON.stringify(options);
-    const result = db.prepare("SELECT query_json(?, ?) as json_data").get(prefix, queryStr) as { json_data: string | null } | undefined;
+    const result = db.prepare("SELECT query_json(?, ?) as json_data").get(prefix, JSON.stringify(options)) as { json_data: string | null } | undefined;
     if (!result?.json_data) return [];
     return JSON.parse(result.json_data) as T[];
   }
@@ -154,8 +149,8 @@ class HierarchicalStore {
   // ===================================================================
 
   /** @deprecated Use `set()` */
-  public saveDocument(docId: string, jsonData: Record<string, unknown> | null): void {
-    this.set(docId, jsonData);
+  public saveDocument<T = Record<string, unknown>>(prefix: string, data: T | null): void {
+    this.set(prefix, data);
   }
 
   /** @deprecated Use `get()` */
