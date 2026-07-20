@@ -71,11 +71,6 @@ function extract(db: Database.Database, prefix: string): object | null {
 
 let db: Database.Database;
 
-// Hook: setup antes de cada teste
-function beforeTest() {
-  db = setupDatabase();
-}
-
 function afterTest() {
   try {
     db.close();
@@ -84,11 +79,18 @@ function afterTest() {
   }
 }
 
+// Hook: setup antes de cada teste
+function beforeTest(): Database.Database {
+  if (db) afterTest();
+  db = setupDatabase();
+  return db;
+}
+
 // ---------------------------------------------------------------------------
 // Exemplo 01: SET documento aninhado
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
 
   console.log("\n🧪 Exemplo 01 — SET /users/100");
 
@@ -161,7 +163,7 @@ function afterTest() {
 // Exemplo 04: SET null (deleção)
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
 
   console.log("\n🧪 Exemplo 04 — SET /users/100/address → null");
 
@@ -205,7 +207,7 @@ function afterTest() {
 // Exemplo 06: GET mantém estrutura (address deletado)
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
 
   console.log("\n🧪 Exemplo 06 — GET /users/100 sem address");
 
@@ -238,7 +240,7 @@ function afterTest() {
 // Exemplo 07: SET substitui tags (array → objeto nomeado)
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
 
   console.log("\n🧪 Exemplo 07 — SET /users/100/tags → objeto nomeado");
 
@@ -291,7 +293,7 @@ function afterTest() {
 // Exemplo 09: Substituição parcial do documento
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
 
   console.log("\n🧪 Exemplo 09 — SET /users/100 (partial overwrite)");
 
@@ -338,7 +340,7 @@ function afterTest() {
 // Exemplo 10: Deleção de documento não afeta outros
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
 
   console.log("\n🧪 Exemplo 10 — SET /users/101 → null");
 
@@ -370,7 +372,7 @@ function afterTest() {
 // Teste: Boolean
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
 
   console.log("\n🧪 Teste — Boolean roundtrip");
 
@@ -396,7 +398,7 @@ function afterTest() {
 // Teste: Números (inteiros e reais)
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
 
   console.log("\n🧪 Teste — Number roundtrip");
 
@@ -419,7 +421,7 @@ function afterTest() {
 // Teste: JSON vazio e array vazio
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
 
   console.log("\n🧪 Teste — Objetos e arrays vazios");
 
@@ -440,7 +442,7 @@ function afterTest() {
 // Teste: Documento não existente
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
 
   console.log("\n🧪 Teste — Documento não existente retorna null");
 

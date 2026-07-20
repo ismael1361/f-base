@@ -108,10 +108,6 @@ async function storeExport(db: Database.Database, pathPrefix: string, type: "jso
 
 let db: Database.Database;
 
-function beforeTest() {
-  db = setupDatabase();
-}
-
 function afterTest() {
   try {
     db.close();
@@ -120,11 +116,17 @@ function afterTest() {
   }
 }
 
+function beforeTest(): Database.Database {
+  if (db) afterTest();
+  db = setupDatabase();
+  return db;
+}
+
 // ---------------------------------------------------------------------------
 // Teste 01: Export JSON - documento simples
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 01 — Export JSON de documento simples");
 
   ingest(db, "users/100", {
@@ -151,7 +153,7 @@ function afterTest() {
 // Teste 02: Export JSON - documento aninhado
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 02 — Export JSON de documento aninhado");
 
   ingest(db, "users/200", {
@@ -176,7 +178,7 @@ function afterTest() {
 // Teste 03: Export JSON - prefixo com múltiplos filhos
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 03 — Export JSON de prefixo com múltiplos filhos");
 
   ingest(db, "people/alice", { name: "Alice", age: 25 });
@@ -200,7 +202,7 @@ function afterTest() {
 // Teste 04: Export JSON - documento inexistente retorna "null"
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 04 — Export JSON de documento inexistente");
 
   const jsonBuf = await storeExport(db, "/nonexistent/path", "json");
@@ -216,7 +218,7 @@ function afterTest() {
 // Teste 05: Export CSV - documento simples
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 05 — Export CSV de documento simples");
 
   ingest(db, "test/1", {
@@ -251,7 +253,7 @@ function afterTest() {
 // Teste 06: Export CSV - prefixo com múltiplos documentos
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 06 — Export CSV de prefixo com múltiplos documentos");
 
   ingest(db, "people/alice", { name: "Alice", age: 25 });
@@ -279,7 +281,7 @@ function afterTest() {
 // Teste 07: Export CSV - valores com caracteres especiais (vírgula, aspas, nova linha)
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 07 — Export CSV com caracteres especiais");
 
   ingest(db, "special/1", {
@@ -309,7 +311,7 @@ function afterTest() {
 // Teste 08: Export CSV - documento inexistente retorna apenas header
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 08 — Export CSV de documento inexistente");
 
   const csvBuf = await storeExport(db, "/nonexistent/path", "csv");
@@ -325,7 +327,7 @@ function afterTest() {
 // Teste 09: Import CSV básico e round-trip
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 09 — Import CSV básico + round-trip");
 
   const csvData = `path,type,text_value
@@ -358,7 +360,7 @@ function afterTest() {
 // Teste 10: Import CSV com caracteres especiais (vírgula, aspas)
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 10 — Import CSV com caracteres especiais");
 
   const csvData = `path,type,text_value
@@ -382,7 +384,7 @@ function afterTest() {
 // Teste 11: Import CSV via Readable stream
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 11 — Import CSV via Readable stream");
 
   const csvData = `path,type,text_value
@@ -406,7 +408,7 @@ function afterTest() {
 // Teste 12: Import JSON básico
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 12 — Import JSON básico");
 
   const jsonData = JSON.stringify({
@@ -431,7 +433,7 @@ function afterTest() {
 // Teste 13: Import JSON via Readable stream
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 13 — Import JSON via Readable stream");
 
   const jsonData = JSON.stringify({
@@ -455,7 +457,7 @@ function afterTest() {
 // Teste 14: Round-trip JSON → Export JSON → Import JSON
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 14 — Round-trip JSON → Export → Import");
 
   // 1. Insere dados originais
@@ -486,7 +488,7 @@ function afterTest() {
 // Teste 15: Round-trip CSV → Export CSV → Import CSV
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 15 — Round-trip CSV → Export → Import");
 
   // 1. Insere dados originais
@@ -519,7 +521,7 @@ function afterTest() {
 // Teste 16: Import CSV vazio (só header)
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 16 — Import CSV vazio (só header)");
 
   const csvData = "path,type,text_value\n";
@@ -539,7 +541,7 @@ function afterTest() {
 // Teste 17: Import JSON inválido deve lançar erro
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 17 — Import JSON inválido deve lançar erro");
 
   let threw = false;
@@ -558,7 +560,7 @@ function afterTest() {
 // Teste 18: Import/Export default type é "json"
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 18 — Default type é 'json'");
 
   const jsonData = JSON.stringify({ test: "default" });
@@ -577,7 +579,7 @@ function afterTest() {
 // Teste 19: Export CSV com array
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 19 — Export CSV com array");
 
   ingest(db, "with-array/1", {
@@ -600,7 +602,7 @@ function afterTest() {
 // Teste 20: Import CSV com boolean e null
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 20 — Import CSV com boolean");
 
   const csvData = `path,type,text_value
@@ -625,7 +627,7 @@ function afterTest() {
 // Teste 21: Export CSV com inline children
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 21 — Export CSV com inline children");
 
   // Com max_inline_size > 0, valores pequenos ficam inline
@@ -651,7 +653,7 @@ function afterTest() {
 // Teste 22: Import CSV com tipos diversos (string, number, boolean)
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 22 — Import CSV com tipos diversos");
 
   const csvData = `path,type,text_value
@@ -680,7 +682,7 @@ function afterTest() {
 // Teste 23: Export JSON de "/" (raiz) — valida que busca prefix range funciona
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 23 — Export JSON da raiz / (verifica prefix range)");
 
   ingest(db, "data/a", { key: "a" });
@@ -708,7 +710,7 @@ function afterTest() {
 // Teste 24: Export CSV de "/" (raiz)
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 24 — Export CSV da raiz /");
 
   ingest(db, "csv-root/x", { v: 1 });
@@ -731,7 +733,7 @@ function afterTest() {
 // Teste 25: Import CSV com array (índices numéricos)
 // ---------------------------------------------------------------------------
 {
-  beforeTest();
+  db = beforeTest();
   console.log("\n🧪 Teste 25 — Import CSV com array");
 
   const csvData = `path,type,text_value
