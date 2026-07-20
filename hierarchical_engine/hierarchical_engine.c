@@ -102,9 +102,16 @@ static void normalize_path(const char *input, char *out_path, size_t out_size)
 
     // Monta path normalizado com '/' inicial e final
     if (input[0] == '/')
-        snprintf(out_path, out_size, "%.*s/", (int)len, input);
+    {
+        if (input[len - 1] == '/')
+            snprintf(out_path, out_size, "%.*s", (int)len, input);
+        else
+            snprintf(out_path, out_size, "%.*s/", (int)len, input);
+    }
     else
+    {
         snprintf(out_path, out_size, "/%.*s/", (int)len, input);
+    }
 }
 
 /// Remove o trailing '/' de um path normalizado.
@@ -1107,9 +1114,12 @@ static void update_json_func(sqlite3_context *context, int argc, sqlite3_value *
     bool has_wildcard = path_has_wildcard(doc_id);
     char root_path[1024];
     // Para wildcard, root_path = parte fixa antes do primeiro wildcard
-    if (has_wildcard) {
+    if (has_wildcard)
+    {
         wildcard_fixed_prefix(doc_id, root_path, sizeof(root_path));
-    } else {
+    }
+    else
+    {
         normalize_path(doc_id, root_path, sizeof(root_path));
     }
 
@@ -1141,7 +1151,8 @@ static void update_json_func(sqlite3_context *context, int argc, sqlite3_value *
     yyjson_doc *update_doc = yyjson_read(json_str, strlen(json_str), 0);
     if (!update_doc)
     {
-        if (current_doc) yyjson_doc_free(current_doc);
+        if (current_doc)
+            yyjson_doc_free(current_doc);
         sqlite3_result_error(context, "Invalid JSON in update", -1);
         return;
     }
@@ -1150,7 +1161,8 @@ static void update_json_func(sqlite3_context *context, int argc, sqlite3_value *
     if (!yyjson_is_obj(update_root) && !yyjson_is_null(update_root))
     {
         yyjson_doc_free(update_doc);
-        if (current_doc) yyjson_doc_free(current_doc);
+        if (current_doc)
+            yyjson_doc_free(current_doc);
         sqlite3_result_error(context, "UPDATE only supports JSON objects or null", -1);
         return;
     }
@@ -1159,12 +1171,14 @@ static void update_json_func(sqlite3_context *context, int argc, sqlite3_value *
     if (yyjson_is_null(update_root))
     {
         yyjson_doc_free(update_doc);
-        if (current_doc) yyjson_doc_free(current_doc);
+        if (current_doc)
+            yyjson_doc_free(current_doc);
         char upper_del[1024];
         strncpy(upper_del, root_path, sizeof(upper_del) - 1);
         upper_del[sizeof(upper_del) - 1] = '\0';
         size_t dlen = strlen(upper_del);
-        if (dlen > 0) upper_del[dlen - 1]++;
+        if (dlen > 0)
+            upper_del[dlen - 1]++;
         sqlite3_stmt *del_stmt;
         if (sqlite3_prepare_v2(db, "DELETE FROM nodes WHERE path >= ?1 AND path < ?2", -1, &del_stmt, 0) == SQLITE_OK)
         {
@@ -1241,14 +1255,16 @@ static void update_json_func(sqlite3_context *context, int argc, sqlite3_value *
     if (!merged_json)
     {
         yyjson_mut_doc_free(merge_doc);
-        if (current_doc) yyjson_doc_free(current_doc);
+        if (current_doc)
+            yyjson_doc_free(current_doc);
         yyjson_doc_free(update_doc);
         sqlite3_result_error(context, "Failed to serialize merged JSON", -1);
         return;
     }
 
     yyjson_mut_doc_free(merge_doc);
-    if (current_doc) yyjson_doc_free(current_doc);
+    if (current_doc)
+        yyjson_doc_free(current_doc);
     yyjson_doc_free(update_doc);
 
     // Aplica SET com o JSON merged
@@ -1289,7 +1305,8 @@ static void update_json_func(sqlite3_context *context, int argc, sqlite3_value *
     path_without_trailing_slash(root_path, clean_doc_id, sizeof(clean_doc_id));
     // Remove leading / para ensure_intermediate_paths
     const char *id_for_ensure = clean_doc_id;
-    if (id_for_ensure[0] == '/') id_for_ensure++;
+    if (id_for_ensure[0] == '/')
+        id_for_ensure++;
     ensure_intermediate_paths(db, check_stmt2, insert_stmt2, id_for_ensure);
 
     int rev_nr = get_current_revision_nr(db, root_path) + 1;
@@ -1915,22 +1932,27 @@ static int compare_entries(const void *a, const void *b)
 static bool extract_path_segment(const char *path, int seg_idx,
                                  char *out, size_t out_size)
 {
-    if (!path || !*path || out_size == 0) return false;
+    if (!path || !*path || out_size == 0)
+        return false;
     out[0] = '\0';
     const char *p = path;
-    if (*p == '/') p++;
+    if (*p == '/')
+        p++;
     int current = 0;
     while (*p && current < seg_idx)
     {
         const char *end = strchr(p, '/');
-        if (!end) return false;
+        if (!end)
+            return false;
         p = end + 1;
         current++;
     }
-    if (!*p || current != seg_idx) return false;
+    if (!*p || current != seg_idx)
+        return false;
     const char *end = strchr(p, '/');
     size_t len = end ? (size_t)(end - p) : strlen(p);
-    if (len >= out_size) len = out_size - 1;
+    if (len >= out_size)
+        len = out_size - 1;
     memcpy(out, p, len);
     out[len] = '\0';
     return true;
@@ -1941,7 +1963,8 @@ static bool extract_path_segment(const char *path, int seg_idx,
 static bool evaluate_var_filter(const char *captured_val,
                                 const QueryFilter *filter)
 {
-    if (!captured_val) return false;
+    if (!captured_val)
+        return false;
 
     if (strcmp(filter->op, "==") == 0)
         return strcmp(captured_val, filter->compare) == 0;
@@ -1992,7 +2015,8 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
         for (size_t i = 0; i < n && filter_count < 64; i++)
         {
             yyjson_val *f = yyjson_arr_get(filters_val, i);
-            if (!yyjson_is_obj(f)) continue;
+            if (!yyjson_is_obj(f))
+                continue;
 
             yyjson_val *key_v = yyjson_obj_get(f, "key");
             yyjson_val *op_v = yyjson_obj_get(f, "op");
@@ -2035,7 +2059,8 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
         for (size_t i = 0; i < n && order_count < 16; i++)
         {
             yyjson_val *o = yyjson_arr_get(orders_val, i);
-            if (!yyjson_is_obj(o)) continue;
+            if (!yyjson_is_obj(o))
+                continue;
             yyjson_val *k = yyjson_obj_get(o, "key");
             yyjson_val *a = yyjson_obj_get(o, "ascending");
             if (k && yyjson_is_str(k))
@@ -2043,8 +2068,8 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
                 strncpy(orders[order_count].key, yyjson_get_str(k),
                         sizeof(orders[order_count].key) - 1);
                 orders[order_count].ascending = !a ||
-                    (yyjson_is_bool(a) && yyjson_get_bool(a)) ||
-                    (yyjson_is_int(a) && yyjson_get_int(a) == 1);
+                                                (yyjson_is_bool(a) && yyjson_get_bool(a)) ||
+                                                (yyjson_is_int(a) && yyjson_get_int(a) == 1);
                 order_count++;
             }
         }
@@ -2055,7 +2080,8 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
     yyjson_val *take_val = yyjson_obj_get(query_root, "take");
     size_t skip = skip_val && yyjson_is_int(skip_val) ? (size_t)yyjson_get_int(skip_val) : 0;
     size_t take = take_val && yyjson_is_int(take_val) ? (size_t)yyjson_get_int(take_val) : 0;
-    if (take == 0) take = (size_t)-1;
+    if (take == 0)
+        take = (size_t)-1;
 
     // ── 5. Obtém prefixo fixo e parseia o padrão wildcard ──
     char fixed[1024];
@@ -2135,8 +2161,10 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
     while (sqlite3_step(scan_stmt) == SQLITE_ROW)
     {
         const char *p = (const char *)sqlite3_column_text(scan_stmt, 0);
-        if (!p) continue;
-        if (!wildcard_matches(p, &wc_pat)) continue;
+        if (!p)
+            continue;
+        if (!wildcard_matches(p, &wc_pat))
+            continue;
 
         // Se há filtros de variável, verifica antes de armazenar
         if (var_filter_count > 0)
@@ -2154,7 +2182,7 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
                     if (last_wildcard_seg >= 0)
                     {
                         if (extract_path_segment(p, last_wildcard_seg,
-                                                  cap_buf, sizeof(cap_buf)))
+                                                 cap_buf, sizeof(cap_buf)))
                             captured = cap_buf;
                     }
                 }
@@ -2167,7 +2195,7 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
                         if (strcmp(var_capture_name[vd], vname) == 0)
                         {
                             if (extract_path_segment(p, var_capture_seg[vd],
-                                                      cap_buf, sizeof(cap_buf)))
+                                                     cap_buf, sizeof(cap_buf)))
                                 captured = cap_buf;
                             break;
                         }
@@ -2181,7 +2209,8 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
                 }
                 passes = evaluate_var_filter(captured, &var_filters[vf]);
             }
-            if (!passes) continue;
+            if (!passes)
+                continue;
         }
 
         if (path_count >= path_cap)
@@ -2199,7 +2228,8 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
     const char *extract_sql = "SELECT COALESCE(extract_json(?1), 'null')";
     if (sqlite3_prepare_v2(db, extract_sql, -1, &extract_stmt, 0) != SQLITE_OK)
     {
-        for (int i = 0; i < path_count; i++) sqlite3_free(paths[i]);
+        for (int i = 0; i < path_count; i++)
+            sqlite3_free(paths[i]);
         free(paths);
         yyjson_doc_free(query_doc);
         sqlite3_result_error(context, "Failed to prepare extract in wildcard", -1);
@@ -2255,7 +2285,8 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
         yyjson_mut_doc_free(result_doc);
         free(entries);
         free(item_docs);
-        for (int i = 0; i < path_count; i++) sqlite3_free(paths[i]);
+        for (int i = 0; i < path_count; i++)
+            sqlite3_free(paths[i]);
         free(paths);
         yyjson_doc_free(query_doc);
         sqlite3_result_text(context, "[]", -1, SQLITE_STATIC);
@@ -2270,7 +2301,8 @@ static void do_query_wildcard(sqlite3_context *context, sqlite3 *db,
             bool match = true;
             for (int f = 0; f < field_filter_count && match; f++)
             {
-                if (!field_filters[f].valid) continue;
+                if (!field_filters[f].valid)
+                    continue;
                 match = evaluate_filter(entries[i].val, &field_filters[f]);
             }
             if (match)
@@ -2363,8 +2395,9 @@ static void query_json_func(sqlite3_context *context, int argc, sqlite3_value **
 
     // Verifica se há wildcard multi-nível
     bool has_wildcard = path_has_wildcard(prefix_input);
-    
-    if (has_wildcard) {
+
+    if (has_wildcard)
+    {
         // ─── WILDCARD MULTI-NÍVEL: busca paths que casam o padrão ───
         do_query_wildcard(context, db, prefix_input, query_str);
         return;
@@ -2447,7 +2480,8 @@ static void query_json_func(sqlite3_context *context, int argc, sqlite3_value **
                     else if (yyjson_is_num(cmp_v))
                         snprintf(filters[filter_count].compare, sizeof(filters[filter_count].compare), "%.17g", yyjson_get_num(cmp_v));
                     else if (yyjson_is_bool(cmp_v))
-                        strcpy(filters[filter_count].compare, yyjson_get_bool(cmp_v) ? "true" : "false");
+                        strcpy(filters[filter_count].compare,
+                               yyjson_get_bool(cmp_v) ? "true" : "false");
                 }
                 filters[filter_count].valid = true;
                 filter_count++;
@@ -2613,6 +2647,552 @@ static void query_json_func(sqlite3_context *context, int argc, sqlite3_value **
 }
 
 // =====================================================================
+// CSV MODULE: EXPORT_CSV + IMPORT_CSV
+// =====================================================================
+//
+// export_csv(prefix)    → CSV text (planilha dos nodes)
+// import_csv(prefix, csv_text [, max_inline_size]) → revision UUID
+//
+// Formato CSV:
+//   path,type,text_value
+//   "/",1,"{}"
+//   "/users/",1,"{}"
+//   "/users/100/",1,"{}"
+//   "/users/100/name",5,"""Alice"""
+
+/// Escapa um valor para CSV (RFC 4180).
+/// Retorna string alocada com sqlite3_malloc — caller deve sqlite3_free().
+static char *csv_escape(const char *value)
+{
+    if (!value)
+        return sqlite3_mprintf("");
+
+    // Se não precisa de escape, retorna cópia simples
+    if (!strpbrk(value, ",\"\n\r"))
+        return sqlite3_mprintf("%s", value);
+
+    // Precisa de quoting com escaping de "
+    sqlite3_str *s = sqlite3_str_new(NULL);
+    sqlite3_str_append(s, "\"", 1);
+    while (*value)
+    {
+        if (*value == '"')
+            sqlite3_str_append(s, "\"\"", 2);
+        else
+            sqlite3_str_append(s, value, 1);
+        value++;
+    }
+    sqlite3_str_append(s, "\"", 1);
+    return sqlite3_str_finish(s);
+}
+
+/// Estrutura interna para uma linha do CSV
+typedef struct
+{
+    char *path;
+    int type;
+    char *text_value; // Pode ser NULL
+} CsvRow;
+
+/// Comparador para qsort — ordena por path
+static int compare_csv_rows(const void *a, const void *b)
+{
+    const CsvRow *ra = (const CsvRow *)a;
+    const CsvRow *rb = (const CsvRow *)b;
+    return strcmp(ra->path, rb->path);
+}
+
+/// Parseia uma linha CSV respeitando RFC 4180 (aspas, escaping de "").
+/// Retorna o número de campos ou -1 em erro.
+static int parse_csv_line(const char *line, char ***out_fields)
+{
+    int cap = 8, count = 0;
+    *out_fields = (char **)sqlite3_malloc64((size_t)cap * sizeof(char *));
+    if (!*out_fields)
+        return -1;
+
+    const char *p = line;
+    sqlite3_str *buf = sqlite3_str_new(NULL);
+    int in_quotes = 0;
+
+    while (*p)
+    {
+        if (*p == '"')
+        {
+            if (in_quotes && *(p + 1) == '"')
+            {
+                sqlite3_str_append(buf, "\"", 1);
+                p += 2;
+                continue;
+            }
+            in_quotes = !in_quotes;
+            p++;
+        }
+        else if (*p == ',' && !in_quotes)
+        {
+            char *field = sqlite3_str_finish(buf);
+            buf = sqlite3_str_new(NULL);
+            if (count >= cap)
+            {
+                cap *= 2;
+                *out_fields = (char **)sqlite3_realloc64(*out_fields,
+                                                         (size_t)cap * sizeof(char *));
+                if (!*out_fields)
+                {
+                    sqlite3_free(field);
+                    return -1;
+                }
+            }
+            (*out_fields)[count++] = field ? field : sqlite3_mprintf("");
+            p++;
+        }
+        else
+        {
+            sqlite3_str_append(buf, p, 1);
+            p++;
+        }
+    }
+
+    char *last = sqlite3_str_finish(buf);
+    if (count >= cap)
+    {
+        cap *= 2;
+        *out_fields = (char **)sqlite3_realloc64(*out_fields,
+                                                 (size_t)cap * sizeof(char *));
+        if (!*out_fields)
+        {
+            sqlite3_free(last);
+            return -1;
+        }
+    }
+    (*out_fields)[count++] = last ? last : sqlite3_mprintf("");
+
+    return count;
+}
+
+/// Parseia um CSV completo em array de CsvRow.
+/// Retorna o número de linhas (excluindo header) ou -1 em erro.
+static int parse_csv(const char *csv_text, CsvRow **out_rows)
+{
+    *out_rows = NULL;
+
+    int newline_count = 0;
+    for (const char *p = csv_text; *p; p++)
+        if (*p == '\n')
+            newline_count++;
+
+    int cap = newline_count > 1 ? newline_count : 64;
+    int count = 0;
+    *out_rows = (CsvRow *)sqlite3_malloc64((size_t)cap * sizeof(CsvRow));
+    if (!*out_rows)
+        return -1;
+
+    char *dup = sqlite3_mprintf("%s", csv_text);
+    if (!dup)
+    {
+        sqlite3_free(*out_rows);
+        *out_rows = NULL;
+        return -1;
+    }
+
+    int line_num = 0;
+    char *line = strtok(dup, "\n");
+
+    while (line)
+    {
+        size_t llen = strlen(line);
+        while (llen > 0 && (line[llen - 1] == '\r' || line[llen - 1] == ' '))
+            line[--llen] = '\0';
+
+        if (*line == '\0')
+        {
+            line = strtok(NULL, "\n");
+            continue;
+        }
+
+        line_num++;
+
+        if (line_num == 1)
+        {
+            line = strtok(NULL, "\n");
+            continue;
+        }
+
+        char **fields = NULL;
+        int nf = parse_csv_line(line, &fields);
+        if (nf < 2)
+        {
+            if (fields)
+            {
+                for (int i = 0; i < nf; i++)
+                    sqlite3_free(fields[i]);
+                sqlite3_free(fields);
+            }
+            line = strtok(NULL, "\n");
+            continue;
+        }
+
+        if (count >= cap)
+        {
+            cap = cap * 2 + 1;
+            *out_rows = (CsvRow *)sqlite3_realloc64(*out_rows,
+                                                    (size_t)cap * sizeof(CsvRow));
+            if (!*out_rows)
+            {
+                sqlite3_free(dup);
+                return -1;
+            }
+        }
+
+        CsvRow *row = &(*out_rows)[count];
+        memset(row, 0, sizeof(CsvRow));
+        row->path = sqlite3_mprintf("%s", fields[0]);
+        row->type = atoi(fields[1]);
+        if (nf > 2 && fields[2] && fields[2][0] != '\0')
+            row->text_value = sqlite3_mprintf("%s", fields[2]);
+
+        for (int i = 0; i < nf; i++)
+            sqlite3_free(fields[i]);
+        sqlite3_free(fields);
+
+        count++;
+        line = strtok(NULL, "\n");
+    }
+
+    sqlite3_free(dup);
+    return count;
+}
+
+/// Libera array de CsvRow (count linhas)
+static void free_csv_rows(CsvRow *rows, int count)
+{
+    if (!rows)
+        return;
+    for (int i = 0; i < count; i++)
+    {
+        sqlite3_free(rows[i].path);
+        sqlite3_free(rows[i].text_value);
+    }
+    sqlite3_free(rows);
+}
+
+// =====================================================================
+// EXPORT_CSV (Nodes -> CSV)
+// =====================================================================
+
+/// export_csv(prefix) → CSV text
+/// Gera CSV com todos os nós descendentes do prefixo.
+static void export_csv_func(sqlite3_context *context, int argc,
+                            sqlite3_value **argv)
+{
+    if (argc != 1)
+    {
+        sqlite3_result_error(context, "Usage: export_csv(prefix)", -1);
+        return;
+    }
+
+    const char *input = (const char *)sqlite3_value_text(argv[0]);
+    if (!input || input[0] == '\0')
+    {
+        sqlite3_result_text(context, "path,type,text_value\n", -1,
+                            SQLITE_STATIC);
+        return;
+    }
+
+    char prefix[1024];
+    normalize_path(input, prefix, sizeof(prefix));
+
+    char upper[1024];
+    snprintf(upper, sizeof(upper), "%s", prefix);
+    size_t plen = strlen(upper);
+    if (plen > 0)
+        upper[plen - 1]++;
+
+    sqlite3 *db = sqlite3_context_db_handle(context);
+
+    sqlite3_stmt *stmt;
+    const char *sql =
+        "SELECT path, type, text_value FROM nodes "
+        "WHERE path >= ?1 AND path < ?2 ORDER BY path";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) != SQLITE_OK)
+    {
+        sqlite3_result_error(context, sqlite3_errmsg(db), -1);
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, prefix, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, upper, -1, SQLITE_STATIC);
+
+    sqlite3_str *out = sqlite3_str_new(db);
+    sqlite3_str_append(out, "path,type,text_value\n", 21);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        const char *path = (const char *)sqlite3_column_text(stmt, 0);
+        int type = sqlite3_column_int(stmt, 1);
+        const char *text_val = (const char *)sqlite3_column_text(stmt, 2);
+
+        char *epath = csv_escape(path);
+        char *etext = csv_escape(text_val);
+
+        sqlite3_str_appendf(out, "%s,%d,%s\n", epath, type, etext);
+
+        sqlite3_free(epath);
+        sqlite3_free(etext);
+    }
+    sqlite3_finalize(stmt);
+
+    char *csv_out = sqlite3_str_finish(out);
+    if (csv_out)
+        sqlite3_result_text(context, csv_out, -1, sqlite3_free);
+    else
+        sqlite3_result_text(context, "path,type,text_value\n", -1,
+                            SQLITE_STATIC);
+}
+
+// =====================================================================
+// IMPORT_CSV (CSV -> Nodes) — o trabalho pesado em C
+// =====================================================================
+
+/// Reconstrói uma árvore JSON a partir das linhas CSV usando stack.
+static yyjson_mut_val *csv_rows_to_tree(yyjson_mut_doc *doc,
+                                        CsvRow *rows, int count)
+{
+    if (count == 0)
+        return yyjson_mut_obj(doc);
+
+    qsort(rows, (size_t)count, sizeof(CsvRow), compare_csv_rows);
+
+    CsvRow *root_row = &rows[0];
+    yyjson_mut_val *root = make_value_from_storage(doc, root_row->type,
+                                                   root_row->text_value);
+    if (!root)
+        root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+
+    typedef struct
+    {
+        const char *path;
+        yyjson_mut_val *val;
+    } StackNode;
+
+    StackNode stack[2048];
+    int stack_top = 0;
+    stack[stack_top++] = (StackNode){root_row->path, root};
+
+    for (int i = 1; i < count; i++)
+    {
+        CsvRow *row = &rows[i];
+        const char *path = row->path;
+        int type = row->type;
+        const char *text_val = row->text_value;
+
+        // 1. Encontra o pai na stack
+        yyjson_mut_val *parent = NULL;
+        for (int si = stack_top - 1; si >= 0; si--)
+        {
+            size_t sp_len = strlen(stack[si].path);
+            size_t slen = sp_len;
+            while (slen > 0 && stack[si].path[slen - 1] == '/')
+                slen--;
+            if (strncmp(path, stack[si].path, slen) == 0 &&
+                (path[slen] == '/' || path[slen] == '\0'))
+            {
+                parent = stack[si].val;
+                break;
+            }
+        }
+        if (!parent)
+            parent = root;
+
+        // 2. Extrai a chave (último segmento)
+        char key_buf[256];
+        const char *key = key_buf;
+        int path_end = (int)strlen(path);
+        if (path_end > 0 && path[path_end - 1] == '/')
+            path_end--;
+
+        const char *last_slash = NULL;
+        for (int si = path_end - 1; si >= 0; si--)
+        {
+            if (path[si] == '/')
+            {
+                last_slash = &path[si];
+                break;
+            }
+        }
+        if (last_slash)
+        {
+            int key_len = path_end - (int)(last_slash - path) - 1;
+            if (key_len > 0 && key_len < (int)sizeof(key_buf) - 1)
+            {
+                memcpy(key_buf, last_slash + 1, (size_t)key_len);
+                key_buf[key_len] = '\0';
+            }
+            else
+            {
+                key = path;
+            }
+        }
+        else
+        {
+            key = path;
+        }
+
+        // 3. Cria o valor
+        bool is_container = (type == TYPE_OBJECT || type == TYPE_ARRAY);
+        yyjson_mut_val *child = make_value_from_storage(doc, type, text_val);
+
+        // 4. Adiciona ao pai
+        if (yyjson_mut_is_arr(parent))
+            yyjson_mut_arr_append(parent, child);
+        else
+            yyjson_mut_obj_add(parent, yyjson_mut_strcpy(doc, key), child);
+
+        // 5. Se container, empilha
+        if (is_container && stack_top < 2048)
+            stack[stack_top++] = (StackNode){path, child};
+    }
+
+    return root;
+}
+
+/// import_csv(prefix, csv_text [, max_inline_size]) → revision UUID
+///
+/// Parseia o CSV, reconstrói a árvore JSON e armazena no banco
+/// usando o mesmo motor de flatten (set_json internamente).
+static void import_csv_func(sqlite3_context *context, int argc,
+                            sqlite3_value **argv)
+{
+    if (argc != 2 && argc != 3)
+    {
+        sqlite3_result_error(context,
+                             "Usage: import_csv(prefix, csv_text [, max_inline_size])", -1);
+        return;
+    }
+
+    const char *prefix_input = (const char *)sqlite3_value_text(argv[0]);
+    const char *csv_text = (const char *)sqlite3_value_text(argv[1]);
+    if (!prefix_input || !csv_text)
+    {
+        sqlite3_result_error(context, "Arguments must not be NULL", -1);
+        return;
+    }
+
+    size_t max_inline_size = DEFAULT_MAX_INLINE_SIZE;
+    if (argc == 3 && sqlite3_value_type(argv[2]) == SQLITE_INTEGER)
+    {
+        int val = sqlite3_value_int(argv[2]);
+        if (val > 0)
+            max_inline_size = (size_t)val;
+    }
+
+    sqlite3 *db = sqlite3_context_db_handle(context);
+
+    // ── 1. Parseia CSV ──
+    CsvRow *rows = NULL;
+    int row_count = parse_csv(csv_text, &rows);
+
+    if (row_count < 0)
+    {
+        sqlite3_result_error(context, "Failed to parse CSV", -1);
+        return;
+    }
+
+    if (row_count == 0)
+    {
+        free_csv_rows(rows, 0);
+        char rev[UUID_STR_LEN];
+        generate_uuid_v4(rev, sizeof(rev));
+        sqlite3_result_text(context, rev, -1, SQLITE_TRANSIENT);
+        return;
+    }
+
+    // ── 2. Reconstrói a árvore JSON ──
+    yyjson_mut_doc *tree_doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *tree_root = csv_rows_to_tree(tree_doc, rows, row_count);
+
+    if (!tree_root)
+    {
+        free_csv_rows(rows, row_count);
+        yyjson_mut_doc_free(tree_doc);
+        sqlite3_result_error(context, "Failed to build tree from CSV", -1);
+        return;
+    }
+
+    // Serializa para JSON string para o flatten
+    char *json_str = yyjson_mut_write(tree_doc, 0, NULL);
+    yyjson_mut_doc_free(tree_doc);
+    free_csv_rows(rows, row_count);
+
+    if (!json_str)
+    {
+        sqlite3_result_error(context, "Failed to serialize tree", -1);
+        return;
+    }
+
+    // ── 3. Parseia o JSON com yyjson (imutável) para o flatten ──
+    yyjson_doc *final_doc = yyjson_read(json_str, strlen(json_str), 0);
+    free(json_str);
+    if (!final_doc)
+    {
+        sqlite3_result_error(context, "Failed to re-parse tree JSON", -1);
+        return;
+    }
+    yyjson_val *final_root = yyjson_doc_get_root(final_doc);
+
+    // ── 4. Escreve no banco (mesma lógica de set_json_func) ──
+    char root_path[1024];
+    normalize_path(prefix_input, root_path, sizeof(root_path));
+
+    char revision[UUID_STR_LEN];
+    generate_uuid_v4(revision, sizeof(revision));
+
+    const char *sql_insert =
+        "INSERT OR REPLACE INTO nodes (path, type, text_value, "
+        "  created, modified, revision_nr, revision) "
+        "VALUES (?1, ?2, ?3, "
+        "  COALESCE((SELECT created FROM nodes WHERE path = ?1), "
+        "           unixepoch()), "
+        "  unixepoch(), ?5, ?4)";
+    sqlite3_stmt *insert_stmt;
+    if (sqlite3_prepare_v2(db, sql_insert, -1, &insert_stmt, 0) != SQLITE_OK)
+    {
+        sqlite3_result_error(context, sqlite3_errmsg(db), -1);
+        yyjson_doc_free(final_doc);
+        return;
+    }
+
+    sqlite3_stmt *check_stmt;
+    sqlite3_prepare_v2(db, "SELECT 1 FROM nodes WHERE path = ?1",
+                       -1, &check_stmt, 0);
+
+    sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+    delete_subtree(db, root_path);
+
+    char clean_id[1024];
+    path_without_trailing_slash(root_path, clean_id, sizeof(clean_id));
+    const char *id_for_ensure = clean_id;
+    if (id_for_ensure[0] == '/')
+        id_for_ensure++;
+    ensure_intermediate_paths(db, check_stmt, insert_stmt, id_for_ensure);
+
+    int rev_nr = get_current_revision_nr(db, root_path) + 1;
+
+    insert_node_rev(insert_stmt, root_path, TYPE_OBJECT, NULL,
+                    revision, rev_nr);
+    flatten_value(db, insert_stmt, final_root, root_path,
+                  revision, rev_nr, max_inline_size);
+
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+
+    sqlite3_finalize(insert_stmt);
+    sqlite3_finalize(check_stmt);
+    yyjson_doc_free(final_doc);
+
+    sqlite3_result_text(context, revision, -1, SQLITE_TRANSIENT);
+}
+
+// =====================================================================
 // REGISTRO DA EXTENSÃO
 // =====================================================================
 #ifdef _WIN32
@@ -2626,6 +3206,8 @@ int sqlite3_extension_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routi
     sqlite3_create_function(db, "update_json", -1, SQLITE_UTF8, 0, update_json_func, 0, 0);
     sqlite3_create_function(db, "extract_json", -1, SQLITE_UTF8, 0, extract_json_func, 0, 0);
     sqlite3_create_function(db, "query_json", 2, SQLITE_UTF8, 0, query_json_func, 0, 0);
+    sqlite3_create_function(db, "export_csv", 1, SQLITE_UTF8, 0, export_csv_func, 0, 0);
+    sqlite3_create_function(db, "import_csv", -1, SQLITE_UTF8, 0, import_csv_func, 0, 0);
 
     // Mantém ingest_json como alias para compatibilidade reversa
     sqlite3_create_function(db, "ingest_json", -1, SQLITE_UTF8, 0, set_json_func, 0, 0);

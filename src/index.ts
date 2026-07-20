@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import path from "path";
+import type { Readable } from "stream";
 
 // 1. Inicialização do Banco e Schema
 const db = new Database("db/hierarchical.db", { verbose: console.log });
@@ -58,6 +59,20 @@ interface QueryOptions {
   order?: QueryOrder[];
   skip?: number;
   take?: number;
+}
+
+// =====================================================================
+// HELPERS LEVES (Node.js) — trabalho pesado fica na extensão C
+// =====================================================================
+
+/** Converte Buffer | Readable para Buffer completo */
+async function bufferFromReadable(data: Buffer | Readable): Promise<Buffer> {
+  if (Buffer.isBuffer(data)) return data;
+  const chunks: Buffer[] = [];
+  for await (const chunk of data) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
 }
 
 // =====================================================================
@@ -170,6 +185,64 @@ class HierarchicalStore {
          ORDER BY path`,
       )
       .all(pathPrefix, upperBound) as Array<{ path: string; type: number; text_value: string | null }>;
+  }
+
+  /**
+   * Importa dados JSON ou CSV para o prefixo especificado.
+   *
+   * @param pathPrefix - Prefixo do caminho onde os dados serão importados.
+   * @param data - Conteúdo a ser importado (Buffer ou Readable).
+   * @param type - Tipo de dados ("json" ou "csv").
+   *
+   * @example
+   * ```ts
+   * await store.import("/users", Buffer.from(JSON.stringify([sampleUser])), "json");
+   * ```
+   */
+  public async import(pathPrefix: string, data: Buffer | Readable, type: "json" | "csv" = "json") {
+    const rawContent = await bufferFromReadable(data);
+
+    if (type === "json") {
+      // JSON: delega para set_json (C)
+      const parsed = JSON.parse(rawContent.toString("utf-8"));
+      this.set(pathPrefix, parsed);
+    } else {
+      // CSV: delega para import_csv (C)
+      db.prepare("SELECT import_csv(?, ?)").get(pathPrefix, rawContent.toString("utf-8"));
+    }
+  }
+
+  /**
+   * Exporta dados JSON ou CSV do prefixo especificado.
+   *
+   * @param pathPrefix - Prefixo do caminho de onde os dados serão exportados.
+   * @param type - Tipo de dados ("json" ou "csv").
+   * @returns Conteúdo exportado como Buffer.
+   *
+   * @example
+   * ```ts
+   * const bufferJson = await store.export("/users", "json");
+   * const bufferCsv = await store.export("/users", "csv");
+   * ```
+   */
+  public async export(pathPrefix: string, type: "json" | "csv" = "json"): Promise<Buffer> {
+    if (type === "csv") {
+      // CSV: delega para export_csv (C) — scan + formatação
+      const result = db.prepare("SELECT export_csv(?) as csv_data").get(pathPrefix) as
+        | {
+            csv_data: string | null;
+          }
+        | undefined;
+      return Buffer.from(result?.csv_data ?? "path,type,text_value\n", "utf-8");
+    }
+
+    // JSON: delega para extract_json (C)
+    const result = db.prepare("SELECT extract_json(?) as json_data").get(pathPrefix) as
+      | {
+          json_data: string | null;
+        }
+      | undefined;
+    return Buffer.from(result?.json_data ?? "null", "utf-8");
   }
 }
 
