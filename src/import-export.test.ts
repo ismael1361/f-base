@@ -756,11 +756,82 @@ function beforeTest(): Database.Database {
   afterTest();
 }
 
+// ---------------------------------------------------------------------------
+// Teste 26: Export CSV com string contendo quebra de linha + round-trip
+// ---------------------------------------------------------------------------
+{
+  db = beforeTest();
+  console.log("\n🧪 Teste 26 — Export CSV com multiline string + round-trip");
+
+  ingest(db, "multi/1", {
+    name: "line1\nline2\nline3",
+    simple: "ok",
+  });
+
+  // Exporta CSV
+  const csvBuf = await storeExport(db, "/multi/1", "csv");
+  const csvStr = csvBuf.toString("utf-8");
+
+  // A string multiline deve estar entre aspas no CSV
+  assert.ok(csvStr.includes('"line1'), "Multiline deve estar quoted no CSV");
+
+  // Round-trip: importa em outro path
+  await storeImport(db, "/multi-rt", csvBuf, "csv");
+
+  const data = extract(db, "/multi-rt");
+  assert.ok(data, "dados round-trip devem existir");
+  assert.equal((data as any).name, "line1\nline2\nline3", "Multiline deve preservar quebras");
+  assert.equal((data as any).simple, "ok", "Campo simple deve ser preservado");
+
+  console.log("   ✅ Multiline CSV round-trip funcionou");
+  afterTest();
+}
+
+// ---------------------------------------------------------------------------
+// Teste 27: Import CSV com campos contendo quebra de linha entre aspas
+// ---------------------------------------------------------------------------
+{
+  db = beforeTest();
+  console.log("\n🧪 Teste 27 — Import CSV com campos multiline quoted");
+
+  const csvData = ["path,type,text_value", '"/ml-test/",1,"{}"', '"/ml-test/desc",5,"""line1', "line2", 'line3"""', '"/ml-test/val",3,"42"'].join("\n");
+
+  await storeImport(db, "/ml-test", Buffer.from(csvData), "csv");
+
+  const data = extract(db, "/ml-test");
+  assert.ok(data, "dados devem existir");
+  assert.equal((data as any).desc, "line1\nline2\nline3", "Quebras de linha preservadas");
+  assert.equal((data as any).val, 42, "Campo posterior preservado");
+
+  console.log("   ✅ Import multiline quoted funcionou");
+  afterTest();
+}
+
+// ---------------------------------------------------------------------------
+// Teste 28: Import CSV com CRLF (Windows line endings)
+// ---------------------------------------------------------------------------
+{
+  db = beforeTest();
+  console.log("\n🧪 Teste 28 — Import CSV com CRLF (windows)");
+
+  const csvData = 'path,type,text_value\r\n/win/,"1","{}"\r\n/win/x,"5","""hello"""\r\n/win/y,"3","99"';
+
+  await storeImport(db, "/win", Buffer.from(csvData), "csv");
+
+  const data = extract(db, "/win");
+  assert.ok(data, "dados devem existir");
+  assert.equal((data as any).x, "hello", "CRLF não afeta parse");
+  assert.equal((data as any).y, 99, "CRLF não afeta parse");
+
+  console.log("   ✅ Import CSV com CRLF funcionou");
+  afterTest();
+}
+
 // =============================================================================
 // Resumo
 // =============================================================================
 console.log("\n========================================");
-console.log("✅ Todos os 25 testes de import/export passaram!");
+console.log("✅ Todos os 28 testes de import/export passaram!");
 console.log("========================================");
 
 db.close();

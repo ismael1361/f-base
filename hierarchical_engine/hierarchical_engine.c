@@ -2653,12 +2653,14 @@ static void query_json_func(sqlite3_context *context, int argc, sqlite3_value **
 // export_csv(prefix)    → CSV text (planilha dos nodes)
 // import_csv(prefix, csv_text [, max_inline_size]) → revision UUID
 //
-// Formato CSV:
+// Formato CSV (RFC 4180):
 //   path,type,text_value
 //   "/",1,"{}"
 //   "/users/",1,"{}"
 //   "/users/100/",1,"{}"
 //   "/users/100/name",5,"""Alice"""
+
+#define CSV_HEADER "path,type,text_value\n"
 
 /// Escapa um valor para CSV (RFC 4180).
 /// Retorna string alocada com sqlite3_malloc — caller deve sqlite3_free().
@@ -2673,6 +2675,9 @@ static char *csv_escape(const char *value)
 
     // Precisa de quoting com escaping de "
     sqlite3_str *s = sqlite3_str_new(NULL);
+    if (!s)
+        return sqlite3_mprintf("");
+
     sqlite3_str_append(s, "\"", 1);
     while (*value)
     {
@@ -2704,6 +2709,8 @@ static int compare_csv_rows(const void *a, const void *b)
 
 /// Parseia uma linha CSV respeitando RFC 4180 (aspas, escaping de "").
 /// Retorna o número de campos ou -1 em erro.
+/// out_fields será alocado com sqlite3_malloc — caller deve free cada
+/// elemento e o array.
 static int parse_csv_line(const char *line, char ***out_fields)
 {
     int cap = 8, count = 0;
@@ -2713,6 +2720,12 @@ static int parse_csv_line(const char *line, char ***out_fields)
 
     const char *p = line;
     sqlite3_str *buf = sqlite3_str_new(NULL);
+    if (!buf)
+    {
+        sqlite3_free(*out_fields);
+        *out_fields = NULL;
+        return -1;
+    }
     int in_quotes = 0;
 
     while (*p)
@@ -2732,6 +2745,15 @@ static int parse_csv_line(const char *line, char ***out_fields)
         {
             char *field = sqlite3_str_finish(buf);
             buf = sqlite3_str_new(NULL);
+            if (!buf)
+            {
+                sqlite3_free(field);
+                for (int i = 0; i < count; i++)
+                    sqlite3_free((*out_fields)[i]);
+                sqlite3_free(*out_fields);
+                *out_fields = NULL;
+                return -1;
+            }
             if (count >= cap)
             {
                 cap *= 2;
@@ -2770,65 +2792,126 @@ static int parse_csv_line(const char *line, char ***out_fields)
     return count;
 }
 
+/// Conta linhas lógicas do CSV respeitando quoted newlines.
+/// Retorna o número de linhas e aloca arrays de ponteiros e comprimentos.
+static int split_csv_lines(const char *csv_text, const char ***out_lines, size_t **out_lengths)
+{
+    int cap = 128, count = 0;
+    *out_lines = (const char **)sqlite3_malloc64((size_t)cap * sizeof(const char *));
+    *out_lengths = (size_t *)sqlite3_malloc64((size_t)cap * sizeof(size_t));
+    if (!*out_lines || !*out_lengths)
+    {
+        sqlite3_free(*out_lines);
+        sqlite3_free(*out_lengths);
+        *out_lines = NULL;
+        *out_lengths = NULL;
+        return -1;
+    }
+
+    const char *start = csv_text;
+    int in_quotes = 0;
+
+    for (const char *p = csv_text;; p++)
+    {
+        if (*p == '"')
+            in_quotes = !in_quotes;
+
+        if ((*p == '\n' && !in_quotes) || *p == '\0')
+        {
+            if (count >= cap)
+            {
+                cap *= 2;
+                *out_lines = (const char **)sqlite3_realloc64(*out_lines,
+                                                              (size_t)cap * sizeof(const char *));
+                *out_lengths = (size_t *)sqlite3_realloc64(*out_lengths,
+                                                           (size_t)cap * sizeof(size_t));
+                if (!*out_lines || !*out_lengths)
+                    return -1;
+            }
+            (*out_lines)[count] = start;
+            (*out_lengths)[count] = (size_t)(p - start);
+            count++;
+            start = p + 1;
+
+            if (*p == '\0')
+                break;
+        }
+    }
+
+    return count;
+}
+
 /// Parseia um CSV completo em array de CsvRow.
+/// Suporta campos com quebra de linha entre aspas (RFC 4180).
 /// Retorna o número de linhas (excluindo header) ou -1 em erro.
 static int parse_csv(const char *csv_text, CsvRow **out_rows)
 {
     *out_rows = NULL;
 
-    int newline_count = 0;
-    for (const char *p = csv_text; *p; p++)
-        if (*p == '\n')
-            newline_count++;
+    // Divide em linhas lógicas (respeitando quoted newlines)
+    const char **lines = NULL;
+    size_t *line_lengths = NULL;
+    int line_count = split_csv_lines(csv_text, &lines, &line_lengths);
+    if (line_count < 0)
+        return -1;
+    if (line_count == 0)
+    {
+        sqlite3_free(lines);
+        sqlite3_free(line_lengths);
+        return 0;
+    }
 
-    int cap = newline_count > 1 ? newline_count : 64;
+    int cap = line_count > 1 ? line_count - 1 : 64;
     int count = 0;
     *out_rows = (CsvRow *)sqlite3_malloc64((size_t)cap * sizeof(CsvRow));
     if (!*out_rows)
-        return -1;
-
-    char *dup = sqlite3_mprintf("%s", csv_text);
-    if (!dup)
     {
-        sqlite3_free(*out_rows);
-        *out_rows = NULL;
+        sqlite3_free(lines);
+        sqlite3_free(line_lengths);
         return -1;
     }
 
-    int line_num = 0;
-    char *line = strtok(dup, "\n");
-
-    while (line)
+    for (int i = 1; i < line_count; i++)
     {
-        size_t llen = strlen(line);
-        while (llen > 0 && (line[llen - 1] == '\r' || line[llen - 1] == ' '))
-            line[--llen] = '\0';
+        const char *line = lines[i];
+        size_t llen = line_lengths[i];
+        // Apenas remove \r do final, NÃO remove espaços (são significativos em CSV)
+        while (llen > 0 && line[llen - 1] == '\r')
+            llen--;
 
-        if (*line == '\0')
-        {
-            line = strtok(NULL, "\n");
+        if (llen == 0)
             continue;
-        }
 
-        line_num++;
-
-        if (line_num == 1)
+        // Cria cópia sem \r no final para parse_csv_line
+        char *line_copy = (char *)sqlite3_malloc64(llen + 1);
+        if (!line_copy)
         {
-            line = strtok(NULL, "\n");
-            continue;
+            for (int j = 0; j < count; j++)
+            {
+                sqlite3_free((*out_rows)[j].path);
+                sqlite3_free((*out_rows)[j].text_value);
+            }
+            sqlite3_free(*out_rows);
+            *out_rows = NULL;
+            sqlite3_free(lines);
+            sqlite3_free(line_lengths);
+            return -1;
         }
+        memcpy(line_copy, line, llen);
+        line_copy[llen] = '\0';
 
         char **fields = NULL;
-        int nf = parse_csv_line(line, &fields);
+        int nf = parse_csv_line(line_copy, &fields);
+        sqlite3_free(line_copy);
+
         if (nf < 2)
         {
             if (fields)
             {
-                for (int i = 0; i < nf; i++)
-                    sqlite3_free(fields[i]);
+                for (int j = 0; j < nf; j++)
+                    sqlite3_free(fields[j]);
                 sqlite3_free(fields);
             }
-            line = strtok(NULL, "\n");
             continue;
         }
 
@@ -2839,7 +2922,14 @@ static int parse_csv(const char *csv_text, CsvRow **out_rows)
                                                     (size_t)cap * sizeof(CsvRow));
             if (!*out_rows)
             {
-                sqlite3_free(dup);
+                for (int j = 0; j < count; j++)
+                {
+                    sqlite3_free((*out_rows)[j].path);
+                    sqlite3_free((*out_rows)[j].text_value);
+                }
+                sqlite3_free(*out_rows);
+                sqlite3_free(lines);
+                sqlite3_free(line_lengths);
                 return -1;
             }
         }
@@ -2851,15 +2941,15 @@ static int parse_csv(const char *csv_text, CsvRow **out_rows)
         if (nf > 2 && fields[2] && fields[2][0] != '\0')
             row->text_value = sqlite3_mprintf("%s", fields[2]);
 
-        for (int i = 0; i < nf; i++)
-            sqlite3_free(fields[i]);
+        for (int j = 0; j < nf; j++)
+            sqlite3_free(fields[j]);
         sqlite3_free(fields);
 
         count++;
-        line = strtok(NULL, "\n");
     }
 
-    sqlite3_free(dup);
+    sqlite3_free(lines);
+    sqlite3_free(line_lengths);
     return count;
 }
 
@@ -2894,8 +2984,7 @@ static void export_csv_func(sqlite3_context *context, int argc,
     const char *input = (const char *)sqlite3_value_text(argv[0]);
     if (!input || input[0] == '\0')
     {
-        sqlite3_result_text(context, "path,type,text_value\n", -1,
-                            SQLITE_STATIC);
+        sqlite3_result_text(context, CSV_HEADER, -1, SQLITE_STATIC);
         return;
     }
 
@@ -2923,7 +3012,13 @@ static void export_csv_func(sqlite3_context *context, int argc,
     sqlite3_bind_text(stmt, 2, upper, -1, SQLITE_STATIC);
 
     sqlite3_str *out = sqlite3_str_new(db);
-    sqlite3_str_append(out, "path,type,text_value\n", 21);
+    if (!out)
+    {
+        sqlite3_finalize(stmt);
+        sqlite3_result_error(context, "OOM in export_csv", -1);
+        return;
+    }
+    sqlite3_str_append(out, CSV_HEADER, (int)strlen(CSV_HEADER));
 
     while (sqlite3_step(stmt) == SQLITE_ROW)
     {
@@ -2945,8 +3040,7 @@ static void export_csv_func(sqlite3_context *context, int argc,
     if (csv_out)
         sqlite3_result_text(context, csv_out, -1, sqlite3_free);
     else
-        sqlite3_result_text(context, "path,type,text_value\n", -1,
-                            SQLITE_STATIC);
+        sqlite3_result_text(context, CSV_HEADER, -1, SQLITE_STATIC);
 }
 
 // =====================================================================

@@ -40,7 +40,7 @@ function setupDatabase(): Database.Database {
 
   // Carrega extensão C
   try {
-    (db as any).loadExtension(EXT_PATH, "sqlite3_hierarchical_init");
+    (db as any).loadExtension(EXT_PATH);
   } catch (err) {
     console.error("❌ Falha ao carregar extensão C. Compile primeiro com build.sh");
     console.error(`   Caminho esperado: ${EXT_PATH}`);

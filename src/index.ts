@@ -79,7 +79,19 @@ async function bufferFromReadable(data: Buffer | Readable): Promise<Buffer> {
 // 3. API de Alto Nível (TypeScript)
 // =====================================================================
 
+/** Header do CSV de exportação (alinhado com a constante C CSV_HEADER) */
+const CSV_HEADER = "path,type,text_value\n";
+
 class HierarchicalStore {
+  private db: Database.Database;
+
+  /**
+   * @param database - Instância opcional do better-sqlite3.
+   *                   Se omitida, usa o singleton padrão.
+   */
+  constructor(database?: Database.Database) {
+    this.db = database ?? db;
+  }
   /**
    * Define (substitui) um documento JSON em um caminho.
    * O path DEVE começar com "/".
@@ -91,7 +103,7 @@ class HierarchicalStore {
    * ```
    */
   public set<T = Record<string, unknown>>(prefix: string, data: T | null): string {
-    const row = db.prepare("SELECT set_json(?, ?) as revision").get(prefix, JSON.stringify(data)) as { revision: string } | undefined;
+    const row = this.db.prepare("SELECT set_json(?, ?) as revision").get(prefix, JSON.stringify(data)) as { revision: string } | undefined;
     return row?.revision ?? "";
   }
 
@@ -106,7 +118,7 @@ class HierarchicalStore {
    * ```
    */
   public get<T = Record<string, unknown>>(prefix: string): T | null {
-    const result = db.prepare("SELECT extract_json(?) as json_data").get(prefix) as { json_data: string | null } | undefined;
+    const result = this.db.prepare("SELECT extract_json(?) as json_data").get(prefix) as { json_data: string | null } | undefined;
     if (!result?.json_data) return null;
     return JSON.parse(result.json_data) as T;
   }
@@ -131,7 +143,7 @@ class HierarchicalStore {
    * ```
    */
   public update<T = Record<string, unknown>>(prefix: string, data: T): string {
-    const row = db.prepare("SELECT update_json(?, ?) as revision").get(prefix, JSON.stringify(data)) as { revision: string } | undefined;
+    const row = this.db.prepare("SELECT update_json(?, ?) as revision").get(prefix, JSON.stringify(data)) as { revision: string } | undefined;
     return row?.revision ?? "";
   }
 
@@ -154,7 +166,7 @@ class HierarchicalStore {
    * ```
    */
   public query<T = Record<string, unknown>>(prefix: string, options: QueryOptions = {}): T[] {
-    const result = db.prepare("SELECT query_json(?, ?) as json_data").get(prefix, JSON.stringify(options)) as { json_data: string | null } | undefined;
+    const result = this.db.prepare("SELECT query_json(?, ?) as json_data").get(prefix, JSON.stringify(options)) as { json_data: string | null } | undefined;
     if (!result?.json_data) return [];
     return JSON.parse(result.json_data) as T[];
   }
@@ -175,9 +187,11 @@ class HierarchicalStore {
 
   /** Busca hierárquica raw usando Prefix Range Trick (sem reconstrução JSON) */
   public searchByPath(pathPrefix: string): Array<{ path: string; type: number; text_value: string | null }> {
-    const upperBound = pathPrefix.slice(0, -1) + String.fromCharCode(pathPrefix.charCodeAt(pathPrefix.length - 1) + 1);
+    // Upper bound seguro: usa \uffff (máximo Unicode válido) como sentinela
+    // em vez de incrementar o último byte (que quebra com caracteres multi-byte)
+    const upperBound = pathPrefix + "\uffff";
 
-    return db
+    return this.db
       .prepare(
         `SELECT path, type, text_value
          FROM nodes
@@ -208,7 +222,7 @@ class HierarchicalStore {
       this.set(pathPrefix, parsed);
     } else {
       // CSV: delega para import_csv (C)
-      db.prepare("SELECT import_csv(?, ?)").get(pathPrefix, rawContent.toString("utf-8"));
+      this.db.prepare("SELECT import_csv(?, ?)").get(pathPrefix, rawContent.toString("utf-8"));
     }
   }
 
@@ -228,16 +242,16 @@ class HierarchicalStore {
   public async export(pathPrefix: string, type: "json" | "csv" = "json"): Promise<Buffer> {
     if (type === "csv") {
       // CSV: delega para export_csv (C) — scan + formatação
-      const result = db.prepare("SELECT export_csv(?) as csv_data").get(pathPrefix) as
+      const result = this.db.prepare("SELECT export_csv(?) as csv_data").get(pathPrefix) as
         | {
             csv_data: string | null;
           }
         | undefined;
-      return Buffer.from(result?.csv_data ?? "path,type,text_value\n", "utf-8");
+      return Buffer.from(result?.csv_data ?? CSV_HEADER, "utf-8");
     }
 
     // JSON: delega para extract_json (C)
-    const result = db.prepare("SELECT extract_json(?) as json_data").get(pathPrefix) as
+    const result = this.db.prepare("SELECT extract_json(?) as json_data").get(pathPrefix) as
       | {
           json_data: string | null;
         }
