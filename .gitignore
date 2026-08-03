@@ -27,6 +27,7 @@ Thumbs.db
 
 db/
 pgsql
+pg_extension/pgsql/
 pg_extension/*.dll
 pg_extension/*.so
 pg_extension/*.dylib

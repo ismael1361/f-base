@@ -26,7 +26,7 @@
 #include "utils/builtins.h"
 #include "utils/elog.h"
 #include "utils/memutils.h"
-#include "utils/sort.h" /* qsort_arg */
+#include "port.h" /* qsort_arg */
 #include "catalog/pg_type.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"

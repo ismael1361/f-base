@@ -21,7 +21,7 @@ set -e
 cd "$(dirname "$0")"
 
 OUTPUT="hierarchical_engine.dll"
-PGSQL_DIR="pgsql/pgsql"
+PGSQL_DIR="pgsql"
 DEST="../../node_modules/@embedded-postgres/windows-x64/native/lib"
 
 # ---------------------------------------------------------------
@@ -46,7 +46,6 @@ echo "🔨 Compilando extensão PostgreSQL..."
 gcc -shared -O3 -static-libgcc \
     -I"$PGSQL_DIR/include" \
     -I"$PGSQL_DIR/include/server" \
-    -I"$PGSQL_DIR/include/internal" \
     -I. \
     hierarchical_engine_pg.c src/pg_utils.c src/pg_services.c yyjson.c \
     "$PGSQL_DIR/lib/postgres.lib" \
