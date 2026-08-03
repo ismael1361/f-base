@@ -1,8 +1,15 @@
 #!/bin/sh
 # =============================================================================
-# Build Script da Extensão PostgreSQL (hierarchical_engine_pg.c)
-# Compila a extensão C e copia para o diretório de extensões do
-# embedded-postgres (@embedded-postgres/windows-x64/native/lib).
+# Build Script da Extensão PostgreSQL
+# Compila a extensão C (controllers + services + utils) e copia para o
+# diretório de extensões do embedded-postgres
+# (@embedded-postgres/windows-x64/native/lib).
+#
+# Estrutura:
+#   hierarchical_engine_pg.c  — controllers (entry points SQL)
+#   src/pg_utils.c            — utils (uuid, paths, wildcards, strings, valores)
+#   src/pg_services.c         — services (SPI, flatten/insert, merge, extract, query, CSV)
+#   yyjson.c                  — parser JSON
 #
 # Pré-requisitos:
 #   - w64devkit (gcc 15+) no PATH  → https://github.com/skeeto/w64devkit
@@ -40,7 +47,8 @@ gcc -shared -O3 -static-libgcc \
     -I"$PGSQL_DIR/include" \
     -I"$PGSQL_DIR/include/server" \
     -I"$PGSQL_DIR/include/internal" \
-    hierarchical_engine_pg.c yyjson.c \
+    -I. \
+    hierarchical_engine_pg.c src/pg_utils.c src/pg_services.c yyjson.c \
     "$PGSQL_DIR/lib/postgres.lib" \
     -o "$OUTPUT"
 
