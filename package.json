@@ -4,7 +4,10 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "npx tsx src/index.ts"
+    "start": "npx tsx src/index.ts",
+    "build:pg": "sh pg_extension/build.sh",
+    "test:pg": "npx tsx src/index.pg.test.ts && npx tsx src/import-export.pg.test.ts",
+    "test": "npm run test:pg"
   },
   "keywords": [],
   "author": "",
@@ -14,10 +17,13 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.1",
     "better-sqlite3": "^12.11.1",
+    "embedded-postgres": "^18.4.0-beta.17",
+    "pg": "^8.22.0",
     "ts-node": "^10.9.2",
     "typescript": "^7.0.2"
   },
   "devDependencies": {
+    "@types/pg": "^8.20.3",
     "tsx": "^4.23.1"
   }
 }

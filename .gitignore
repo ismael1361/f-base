@@ -26,3 +26,9 @@ Thumbs.db
 *.suo
 
 db/
+pgsql
+pg_extension/pgsql/
+pg_extension/*.dll
+pg_extension/*.so
+pg_extension/*.dylib
+node_modules/@embedded-postgres/*/native/lib/hierarchical_engine.*
