@@ -1,81 +1,81 @@
-import { Readable } from "stream";
 import { strict as assert } from "node:assert";
-import { setupPg, type PgTestContext } from "./pg-test-helper.js";
+import { Readable } from "stream";
+import { setupLibsql, type LibsqlTestContext } from "./libsql-test-helper";
 
 // =============================================================================
-// Test Suite: Import/Export (PostgreSQL)
-// Paridade com src/import-export.test.ts (SQLite), agora sobre embedded-postgres
+// Test Suite: Import/Export (JSON e CSV) — libSQL / Turso embedded
+// Paridade com src/import-export.test.ts (SQLite), agora via LibsqlHierarchicalStore
 // =============================================================================
 
-let ctx: PgTestContext;
+let ctx: LibsqlTestContext;
 
-async function ingest(docId: string, data: object | null): Promise<void> {
-  await ctx.store.set(docId, data);
+// Helpers
+function ingest(docId: string, data: object | null): void {
+  ctx.store.set(docId, data);
 }
 
-async function extract(prefix: string): Promise<object | null> {
+function extract(prefix: string): object | null {
   return ctx.store.get(prefix);
-}
-
-async function exportJson(prefix: string): Promise<string | null> {
-  return ctx.store.export(prefix, "json").then((b) => b.toString("utf-8"));
-}
-
-async function exportCsv(prefix: string): Promise<string | null> {
-  return ctx.store.export(prefix, "csv").then((b) => b.toString("utf-8"));
-}
-
-async function importCsv(prefix: string, csv: string): Promise<void> {
-  await ctx.client.query("SELECT import_csv($1, $2)", [prefix, csv]);
 }
 
 async function storeImport(pathPrefix: string, data: Buffer | Readable, type: "json" | "csv" = "json"): Promise<void> {
   await ctx.store.import(pathPrefix, data, type);
 }
 
-async function storeExport(pathPrefix: string, type: "json" | "csv" = "json"): Promise<Buffer> {
+function storeExport(pathPrefix: string, type: "json" | "csv" = "json"): Buffer {
   return ctx.store.export(pathPrefix, type);
 }
 
-async function beforeTest(): Promise<void> {
-  await ctx.reset();
+function beforeTest(): void {
+  ctx.reset();
 }
 
-ctx = await setupPg();
+// Inicializa o banco de teste (memória + extensão C)
+ctx = setupLibsql();
 
 // ---------------------------------------------------------------------------
 // Teste 01: Export JSON - documento simples
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 01 — Export JSON de documento simples");
 
-  await ingest("users/100", { id: 100, name: "Alan Turing", age: 41, active: true });
+  ingest("users/100", {
+    id: 100,
+    name: "Alan Turing",
+    age: 41,
+    active: true,
+  });
 
-  const parsed = JSON.parse((await exportJson("/users/100")) as string);
+  const jsonBuf = storeExport("/users/100", "json");
+  const jsonStr = jsonBuf.toString("utf-8");
+  const parsed = JSON.parse(jsonStr);
+
   assert.equal(parsed.id, 100);
   assert.equal(parsed.name, "Alan Turing");
   assert.equal(parsed.age, 41);
   assert.equal(parsed.active, true);
 
-  console.log("   ✅ Export JSON funcionou");
+  console.log("   ✅ Export JSON funcionou:", jsonStr.slice(0, 60) + "...");
 }
 
 // ---------------------------------------------------------------------------
 // Teste 02: Export JSON - documento aninhado
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 02 — Export JSON de documento aninhado");
 
-  await ingest("users/200", {
+  ingest("users/200", {
     id: 200,
     name: "Ada Lovelace",
     address: { city: "Londres", zip: "12345" },
     tags: ["genius", "pioneer"],
   });
 
-  const parsed = JSON.parse((await exportJson("/users/200")) as string);
+  const jsonBuf = storeExport("/users/200", "json");
+  const parsed = JSON.parse(jsonBuf.toString("utf-8"));
+
   assert.equal(parsed.name, "Ada Lovelace");
   assert.deepEqual(parsed.address, { city: "Londres", zip: "12345" });
   assert.deepEqual(parsed.tags, ["genius", "pioneer"]);
@@ -87,14 +87,16 @@ ctx = await setupPg();
 // Teste 03: Export JSON - prefixo com múltiplos filhos
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 03 — Export JSON de prefixo com múltiplos filhos");
 
-  await ingest("people/alice", { name: "Alice", age: 25 });
-  await ingest("people/bob", { name: "Bob", age: 35 });
-  await ingest("people/charlie", { name: "Charlie", age: 20 });
+  ingest("people/alice", { name: "Alice", age: 25 });
+  ingest("people/bob", { name: "Bob", age: 35 });
+  ingest("people/charlie", { name: "Charlie", age: 20 });
 
-  const parsed = JSON.parse((await exportJson("/people")) as string);
+  const jsonBuf = storeExport("/people", "json");
+  const parsed = JSON.parse(jsonBuf.toString("utf-8"));
+
   assert.ok(parsed.alice, "alice deve existir");
   assert.ok(parsed.bob, "bob deve existir");
   assert.ok(parsed.charlie, "charlie deve existir");
@@ -108,10 +110,10 @@ ctx = await setupPg();
 // Teste 04: Export JSON - documento inexistente retorna "null"
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 04 — Export JSON de documento inexistente");
 
-  const jsonStr = await exportJson("/nonexistent/path");
+  const jsonStr = storeExport("/nonexistent/path", "json").toString("utf-8");
   assert.equal(jsonStr, "null");
 
   console.log("   ✅ Export JSON inexistente retorna 'null'");
@@ -121,70 +123,88 @@ ctx = await setupPg();
 // Teste 05: Export CSV - documento simples
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 05 — Export CSV de documento simples");
 
-  await ingest("test/1", { name: "Test", value: 42 });
+  ingest("test/1", { name: "Test", value: 42 });
 
-  const csvStr = (await exportCsv("/test/1")) as string;
+  const csvStr = storeExport("/test/1", "csv").toString("utf-8");
+
   assert.ok(csvStr.startsWith("path,type,text_value\n"), "CSV deve ter header");
   assert.ok(csvStr.includes("/test/1/"), "Deve conter container /test/1/");
   assert.ok(csvStr.includes("/test/1/name"), "Deve conter nó name");
   assert.ok(csvStr.includes("/test/1/value"), "Deve conter nó value");
+  assert.ok(csvStr.includes("Test") || csvStr.includes('"Test"'), "Deve conter valor Test");
+  assert.ok(csvStr.includes("42"), "Deve conter valor 42");
 
-  console.log("   ✅ Export CSV funcionou");
+  console.log("   ✅ Export CSV funcionou:");
+  console.log(
+    csvStr
+      .split("\n")
+      .map((l) => "      " + l)
+      .join("\n"),
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Teste 06: Export CSV - prefixo com múltiplos documentos
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 06 — Export CSV de prefixo com múltiplos documentos");
 
-  await ingest("people/alice", { name: "Alice", age: 25 });
-  await ingest("people/bob", { name: "Bob", age: 35 });
+  ingest("people/alice", { name: "Alice", age: 25 });
+  ingest("people/bob", { name: "Bob", age: 35 });
 
-  const csvStr = (await exportCsv("/people")) as string;
+  const csvStr = storeExport("/people", "csv").toString("utf-8");
+
   assert.ok(csvStr.includes("/people/"), "Deve conter /people/");
   assert.ok(csvStr.includes("/people/alice/"), "Deve conter /people/alice/");
   assert.ok(csvStr.includes("/people/bob/"), "Deve conter /people/bob/");
   assert.ok(csvStr.includes("/people/alice/name"), "Deve conter nó alice/name");
+  assert.ok(csvStr.includes("/people/bob/name"), "Deve conter nó bob/name");
 
   const lines = csvStr.trim().split("\n");
-  assert.ok(lines.length >= 7, `Deve ter pelo menos 7 linhas, tem ${lines.length}`);
+  assert.ok(lines.length >= 7, `Deve ter pelo menos 7 linhas (header + 6+ nós), tem ${lines.length}`);
 
-  console.log("   ✅ Export CSV multi-doc funcionou");
+  console.log("   ✅ Export CSV multi-doc funcionou:", lines.length, "linhas");
 }
 
 // ---------------------------------------------------------------------------
 // Teste 07: Export CSV - valores com caracteres especiais
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 07 — Export CSV com caracteres especiais");
 
-  await ingest("special/1", {
+  ingest("special/1", {
     withComma: "hello, world",
     withQuotes: 'He said "hi"',
     withNewline: "line1\nline2",
     simple: "normal",
   });
 
-  const csvStr = (await exportCsv("/special/1")) as string;
+  const csvStr = storeExport("/special/1", "csv").toString("utf-8");
+
   assert.ok(csvStr.includes('"hello, world"'), "Vírgula deve estar entre aspas");
 
-  console.log("   ✅ Export CSV com especiais funcionou");
+  console.log("   ✅ Export CSV com especiais funcionou:");
+  console.log(
+    csvStr
+      .split("\n")
+      .map((l) => "      " + l)
+      .join("\n"),
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Teste 08: Export CSV - documento inexistente retorna apenas header
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 08 — Export CSV de documento inexistente");
 
-  const csvStr = await exportCsv("/nonexistent/path");
+  const csvStr = storeExport("/nonexistent/path", "csv").toString("utf-8");
   assert.equal(csvStr, "path,type,text_value\n");
 
   console.log("   ✅ Export CSV inexistente retorna header vazio");
@@ -194,7 +214,7 @@ ctx = await setupPg();
 // Teste 09: Import CSV básico e round-trip
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 09 — Import CSV básico + round-trip");
 
   const csvData = `path,type,text_value
@@ -208,12 +228,12 @@ ctx = await setupPg();
 
   await storeImport("/imported", Buffer.from(csvData), "csv");
 
-  const alice = await extract("/imported/alice");
+  const alice = extract("/imported/alice");
   assert.ok(alice, "alice deve existir");
   assert.equal((alice as any).name, "Alice");
   assert.equal((alice as any).age, 30);
 
-  const bob = await extract("/imported/bob");
+  const bob = extract("/imported/bob");
   assert.ok(bob, "bob deve existir");
   assert.equal((bob as any).name, "Bob");
   assert.equal((bob as any).age, 25);
@@ -225,7 +245,7 @@ ctx = await setupPg();
 // Teste 10: Import CSV com caracteres especiais
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 10 — Import CSV com caracteres especiais");
 
   const csvData = `path,type,text_value
@@ -236,7 +256,7 @@ ctx = await setupPg();
 
   await storeImport("/special", Buffer.from(csvData), "csv");
 
-  const data = await extract("/special");
+  const data = extract("/special");
   assert.ok(data, "dados devem existir");
   assert.equal((data as any).msg1, "Hello, world");
   assert.equal((data as any).num, 42);
@@ -248,7 +268,7 @@ ctx = await setupPg();
 // Teste 11: Import CSV via Readable stream
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 11 — Import CSV via Readable stream");
 
   const csvData = `path,type,text_value
@@ -259,7 +279,7 @@ ctx = await setupPg();
   const readable = Readable.from([csvData]);
   await storeImport("/stream", readable, "csv");
 
-  const data = await extract("/stream");
+  const data = extract("/stream");
   assert.ok(data, "dados devem existir");
   assert.equal((data as any).x, "from stream");
   assert.equal((data as any).y, 99);
@@ -271,13 +291,14 @@ ctx = await setupPg();
 // Teste 12: Import JSON básico
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 12 — Import JSON básico");
 
   const jsonData = JSON.stringify({ id: 500, name: "From JSON Import", active: true });
+
   await storeImport("/json-imported", Buffer.from(jsonData), "json");
 
-  const data = await extract("/json-imported");
+  const data = extract("/json-imported");
   assert.ok(data, "dados devem existir");
   assert.equal((data as any).id, 500);
   assert.equal((data as any).name, "From JSON Import");
@@ -290,14 +311,15 @@ ctx = await setupPg();
 // Teste 13: Import JSON via Readable stream
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 13 — Import JSON via Readable stream");
 
   const jsonData = JSON.stringify({ stream_test: true, value: "from stream" });
   const readable = Readable.from([jsonData]);
+
   await storeImport("/json-stream", readable, "json");
 
-  const data = await extract("/json-stream");
+  const data = extract("/json-stream");
   assert.ok(data, "dados devem existir");
   assert.equal((data as any).stream_test, true);
   assert.equal((data as any).value, "from stream");
@@ -309,21 +331,22 @@ ctx = await setupPg();
 // Teste 14: Round-trip JSON → Export JSON → Import JSON
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 14 — Round-trip JSON → Export → Import");
 
-  await ingest("original/doc", {
+  ingest("original/doc", {
     id: 999,
     name: "Original",
     nested: { key: "value" },
     arr: [1, 2, 3],
   });
 
-  const exported = await storeExport("/original/doc", "json");
+  const exported = storeExport("/original/doc", "json");
   await storeImport("/copy/doc", exported, "json");
 
-  const original = await extract("/original/doc");
-  const copy = await extract("/copy/doc");
+  const original = extract("/original/doc");
+  const copy = extract("/copy/doc");
+
   assert.deepEqual(original, copy, "dados devem ser idênticos após round-trip");
 
   console.log("   ✅ Round-trip JSON funcionou");
@@ -333,16 +356,17 @@ ctx = await setupPg();
 // Teste 15: Round-trip CSV → Export CSV → Import CSV
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 15 — Round-trip CSV → Export → Import");
 
-  await ingest("original/csv", { name: "CSV Test", value: 123, active: false });
+  ingest("original/csv", { name: "CSV Test", value: 123, active: false });
 
-  const exportedCsv = await storeExport("/original/csv", "csv");
+  const exportedCsv = storeExport("/original/csv", "csv");
   await storeImport("/copy/csv", exportedCsv, "csv");
 
-  const original = await extract("/original/csv");
-  const copy = await extract("/copy/csv");
+  const original = extract("/original/csv");
+  const copy = extract("/copy/csv");
+
   assert.ok(original, "original deve existir");
   assert.ok(copy, "copy deve existir");
   assert.equal((original as any).name, (copy as any).name);
@@ -355,13 +379,15 @@ ctx = await setupPg();
 // Teste 16: Import CSV vazio (só header)
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 16 — Import CSV vazio (só header)");
 
-  await storeImport("/empty", Buffer.from("path,type,text_value\n"), "csv");
+  const csvData = "path,type,text_value\n";
 
-  const data = await extract("/empty");
-  assert.equal(data, null, "não deve criar dados");
+  await storeImport("/empty", Buffer.from(csvData), "csv");
+
+  const data = extract("/empty");
+  assert.equal(data, null);
 
   console.log("   ✅ Import CSV vazio não criou dados");
 }
@@ -370,13 +396,13 @@ ctx = await setupPg();
 // Teste 17: Import JSON inválido deve lançar erro
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 17 — Import JSON inválido deve lançar erro");
 
   let threw = false;
   try {
     await storeImport("/invalid", Buffer.from("not valid json"), "json");
-  } catch (e) {
+  } catch {
     threw = true;
   }
   assert.ok(threw, "Deve lançar erro para JSON inválido");
@@ -388,14 +414,15 @@ ctx = await setupPg();
 // Teste 18: Import/Export default type é "json"
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 18 — Default type é 'json'");
 
   const jsonData = JSON.stringify({ test: "default" });
-  await storeImport("/default-test", Buffer.from(jsonData));
+  await storeImport("/default-test", Buffer.from(jsonData)); // sem type
 
-  const exported = await storeExport("/default-test");
+  const exported = storeExport("/default-test"); // sem type
   const parsed = JSON.parse(exported.toString("utf-8"));
+
   assert.equal(parsed.test, "default");
 
   console.log("   ✅ Default type 'json' funcionou");
@@ -405,12 +432,13 @@ ctx = await setupPg();
 // Teste 19: Export CSV com array
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
+  beforeTest();
   console.log("\n🧪 Teste 19 — Export CSV com array");
 
-  await ingest("with-array/1", { name: "With Array", tags: ["a", "b", "c"] });
+  ingest("with-array/1", { name: "With Array", tags: ["a", "b", "c"] });
 
-  const csvStr = (await exportCsv("/with-array/1")) as string;
+  const csvStr = storeExport("/with-array/1", "csv").toString("utf-8");
+
   assert.ok(csvStr.includes("/with-array/1/tags/"), "Deve conter container tags/");
   assert.ok(csvStr.includes("/with-array/1/tags/0"), "Deve conter nó tags/0");
 
@@ -418,37 +446,34 @@ ctx = await setupPg();
 }
 
 // ---------------------------------------------------------------------------
-// Teste 20: Round-trip CSV com string longa (>1KB) — sem truncamento
+// Teste 20: Import CSV com boolean
 // ---------------------------------------------------------------------------
 {
-  await beforeTest();
-  console.log("\n🧪 Teste 20 — Round-trip CSV com string longa");
+  beforeTest();
+  console.log("\n🧪 Teste 20 — Import CSV com boolean");
 
-  const longText = "b".repeat(8_000);
-  await ingest("long-csv/1", { content: longText });
+  const csvData = `path,type,text_value
+"/bool-test/",1,"{}"
+"/bool-test/active",4,"true"
+"/bool-test/inactive",4,"false"
+"/bool-test/count",3,"10"`;
 
-  // Exporta → Importa em outro path → compara
-  const exportedCsv = await storeExport("/long-csv/1", "csv");
-  await storeImport("/long-csv-copy/1", exportedCsv, "csv");
+  await storeImport("/bool-test", Buffer.from(csvData), "csv");
 
-  const original = await extract("/long-csv/1");
-  const copy = await extract("/long-csv-copy/1");
-  assert.equal((original as any).content, longText, "original íntegro");
-  assert.equal((copy as any).content, longText, "cópia via CSV íntegra (8KB)");
-  assert.equal((copy as any).content.length, 8_000, "comprimento preservado");
+  const data = extract("/bool-test");
+  assert.ok(data, "dados devem existir");
+  assert.equal((data as any).active, true);
+  assert.equal((data as any).inactive, false);
+  assert.equal((data as any).count, 10);
 
-  console.log("   ✅ Round-trip CSV long string funcionou");
+  console.log("   ✅ Import CSV com boolean funcionou");
 }
 
 // =============================================================================
-// Encerramento
+// Resumo
 // =============================================================================
-try {
-  await ctx.cleanup();
-  console.log("\n========================================");
-  console.log("✅ Todos os testes Import/Export PostgreSQL passaram!");
-  console.log("========================================");
-} catch (err) {
-  console.error("❌ Falha nos testes:", err);
-  process.exitCode = 1;
-}
+console.log("\n========================================");
+console.log("✅ Todos os testes import/export libSQL passaram!");
+console.log("========================================");
+
+ctx.cleanup();

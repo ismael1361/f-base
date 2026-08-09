@@ -61,14 +61,27 @@ Estrutura de pastas necessária:
 ```
 hierarchical_engine/
 ├── build.sh                    # Script de build (este arquivo)
-├── hierarchical_engine.c       # Código principal da extensão
 ├── yyjson.c                    # Parser JSON ultrarrápido
 ├── yyjson.h
+├── src/                        # Código do motor (Clean Architecture)
+│   ├── he_types.h              # Tipos de domínio (TYPE_*, structs)
+│   ├── he_utils.c/h            # Utils puras (uuid, paths, wildcards, json)
+│   ├── he_repo.c/h             # Persistência (transações, insert/delete, ensure)
+│   ├── he_mapper.c/h           # Flatten JSON→nodes + deep merge
+│   ├── he_query.c/h            # Query engine (filtros/ordenação/paginação)
+│   ├── he_csv.c/h              # Parser/serializer CSV (RFC 4180)
+│   ├── he_services.c/h         # Use-cases (set/update/extract/query/export/import)
+│   └── he_extension.c          # Controllers SQL + entry point sqlite3_extension_init
 └── sqlite/                     # SQLite amalgamation
     ├── sqlite3.c
     ├── sqlite3.h
     └── sqlite3ext.h
 ```
+
+> O antigo `hierarchical_engine.c` (monólito de ~3.3k linhas) foi dividido
+> em módulos `src/he_*.{c,h}`. Apenas `he_extension.c` contém os controllers
+> SQL e o `sqlite3_extension_init`; os demais módulos são camadas com
+> dependência unidirecional: `extension → services → {mapper, query, csv, repo}`.
 
 #### **Como obter o SQLite Amalgamation**
 
@@ -108,9 +121,17 @@ ls -la sqlite/
 
 **Saída esperada:**
 ```
-hierarchical_engine.c
 yyjson.c
 yyjson.h
+src/
+├── he_types.h
+├── he_utils.c    he_utils.h
+├── he_repo.c     he_repo.h
+├── he_mapper.c   he_mapper.h
+├── he_query.c    he_query.h
+├── he_csv.c      he_csv.h
+├── he_services.c he_services.h
+└── he_extension.c
 sqlite/
 ├── sqlite3.c
 ├── sqlite3.h

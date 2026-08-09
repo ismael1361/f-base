@@ -1,15 +1,17 @@
-#ifndef PG_TYPES_H
-#define PG_TYPES_H
+#ifndef HE_TYPES_H
+#define HE_TYPES_H
 
 /*
- * pg_types.h — Constantes e estruturas compartilhadas da extensão PostgreSQL.
+ * he_types.h — Constantes e estruturas compartilhadas do motor SQLite.
  *
- * Camada de TIPOS, usada por utils (src/pg_utils.c) e services
- * (src/pg_services.c). Não contém lógica — apenas definições.
+ * Camada de TIPOS (Clean Architecture): usada por utils, repo, mapper,
+ * query, csv, services e controllers. Não contém lógica — apenas
+ * definições de domínio, sem dependência de sqlite3 ou yyjson headers
+ * (apenas tipos primitivos; yyjson_val* aparece como ponteiro opaco).
  */
 
-#include "postgres.h"
-#include "yyjson.h"
+#include <stdbool.h>
+#include <stddef.h>
 
 /* ===========================================================================
  * TYPE SYSTEM (alinhado com o MDE JavaScript em ivipbase)
@@ -27,6 +29,7 @@
  *   - Para STRING: valor JSON-escapeado (ex: '"John"')
  *   - Para NUMBER: representação textual (ex: "30" ou "3.14")
  *   - Para BOOLEAN: "true" ou "false"
+ *   - Para DATETIME/BIGINT/BINARY/REFERENCE: representação textual
  */
 #define TYPE_EMPTY 0
 #define TYPE_OBJECT 1
@@ -45,6 +48,9 @@
 /* ===========================================================================
  * WILDCARD PATTERN MATCHING (para query/update multi-nível)
  * ===========================================================================
+ * Suporta:
+ *   "*"          → qualquer segmento (ex: "/users/wc/posts")
+ *   "$nome"      → variável nomeada (ex: "/users/$uid/posts")
  */
 #define MAX_WC_SEGMENTS 64
 
@@ -61,10 +67,10 @@ typedef struct
  */
 typedef struct
 {
-  char key[256];
-  char op[16];
-  char compare[512];
-  yyjson_val *compare_val;
+  char key[256];     /* Campo para filtrar (suporta notação aninhada: "address.city") */
+  char op[16];       /* Operador: <, <=, ==, !=, >=, >, like, exists, in, between */
+  char compare[512]; /* Valor para comparar (como string) */
+  void *compare_val; /* Referência ao valor JSON parseado (yyjson_val*) */
   bool valid;
 } QueryFilter;
 
@@ -76,19 +82,21 @@ typedef struct
 
 typedef struct
 {
-  yyjson_val *val;
+  void *val; /* yyjson_val* */
   size_t index;
 } SortEntry;
 
 /* ===========================================================================
- * CSV
+ * CSV (RFC 4180)
  * ===========================================================================
  */
+#define CSV_HEADER "path,type,text_value\n"
+
 typedef struct
 {
   char *path;
   int type;
-  char *text_value;
+  char *text_value; /* Pode ser NULL */
 } CsvRow;
 
-#endif /* PG_TYPES_H */
+#endif /* HE_TYPES_H */

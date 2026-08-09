@@ -12,6 +12,20 @@ SRC_DIR=$(cd "$(dirname "$0")" && pwd)
 OUTPUT_NAME="hierarchical_engine"
 SQLITE_DIR="$SRC_DIR/sqlite"
 
+# Módulos do motor (Clean Architecture — src/he_*.c)
+# he_stmt_cache.c — cache de prepared statements por conexão (auxdata)
+# he_utils.c      — utils puras (uuid, paths, wildcards, json, valores)
+# he_repo.c       — persistência (transações, insert, delete, ensure, extract)
+# he_mapper.c     — flatten JSON→nodes + deep merge
+# he_query.c      — query engine (filtros/ordenação/paginação, sem estado global)
+# he_csv.c        — parser/serializer RFC 4180
+# he_services.c   — use-cases (set/update/extract/query/export/import)
+# he_extension.c  — controllers SQL + entry point sqlite3_extension_init
+MODULES="$SRC_DIR/src/he_stmt_cache.c $SRC_DIR/src/he_utils.c $SRC_DIR/src/he_repo.c \
+         $SRC_DIR/src/he_mapper.c $SRC_DIR/src/he_query.c \
+         $SRC_DIR/src/he_csv.c $SRC_DIR/src/he_services.c \
+         $SRC_DIR/src/he_extension.c"
+
 # Suporte a cores (desabilitado se o terminal não suportar ou $NO_COLOR estiver definido)
 if [ -n "$NO_COLOR" ] || [ ! -t 1 ]; then
     RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
@@ -93,7 +107,7 @@ check_files() {
     echo "${YELLOW}Verificando arquivos...${NC}"
     
     # Lista de arquivos (sem usar arrays do Bash)
-    FILES="$SRC_DIR/hierarchical_engine.c $SRC_DIR/yyjson.c $SRC_DIR/yyjson.h $SQLITE_DIR/sqlite3.c $SQLITE_DIR/sqlite3.h $SQLITE_DIR/sqlite3ext.h"
+    FILES="$SRC_DIR/yyjson.c $SRC_DIR/yyjson.h $SQLITE_DIR/sqlite3.c $SQLITE_DIR/sqlite3.h $SQLITE_DIR/sqlite3ext.h $MODULES"
     
     for file in $FILES; do
         if [ ! -f "$file" ]; then
@@ -129,7 +143,8 @@ build_unix() {
     $CC $SHARED_FLAGS $WARN_FLAGS -O3 \
         -I"$SQLITE_DIR" \
         -I"$SRC_DIR" \
-        "$SRC_DIR/hierarchical_engine.c" \
+        -I"$SRC_DIR/src" \
+        $MODULES \
         "$SRC_DIR/yyjson.c" \
         -o "$OUTPUT_FILE" \
         -lpthread -ldl -lm
@@ -149,8 +164,8 @@ build_windows_msvc() {
     echo "${YELLOW}Compilando com MSVC...${NC}"
     
     # Nota: No MSVC, usamos barras normais, o compilador entende
-    cl /LD /O2 /I"$SQLITE_DIR" /I"$SRC_DIR" \
-        "$SRC_DIR/hierarchical_engine.c" \
+    cl /LD /O2 /I"$SQLITE_DIR" /I"$SRC_DIR" /I"$SRC_DIR/src" \
+        $MODULES \
         "$SRC_DIR/yyjson.c" \
         /Fe:"$OUTPUT_FILE"
     
@@ -174,7 +189,8 @@ build_windows_mingw() {
     $CC -shared -O3 $WARN_FLAGS \
         -I"$SQLITE_DIR" \
         -I"$SRC_DIR" \
-        "$SRC_DIR/hierarchical_engine.c" \
+        -I"$SRC_DIR/src" \
+        $MODULES \
         "$SRC_DIR/yyjson.c" \
         -o "$OUTPUT_FILE"
     

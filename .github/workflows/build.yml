@@ -22,17 +22,19 @@ jobs:
           gcc -shared -fPIC -O3 \
             -I./sqlite \
             -I. \
-            hierarchical_engine.c \
+            -I./src \
+            src/he_stmt_cache.c src/he_utils.c src/he_repo.c src/he_mapper.c src/he_query.c \
+            src/he_csv.c src/he_services.c src/he_extension.c \
             yyjson.c \
             -o hierarchical_engine.so \
             -lpthread -ldl -lm
-        working-directory: hierarchical_engine  # ← ADICIONE ISSO
+        working-directory: hierarchical_engine
       
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-linux
-          path: hierarchical_engine/hierarchical_engine.so  # ← AJUSTE O PATH
+          path: hierarchical_engine/hierarchical_engine.so
 
   build-macos:
     runs-on: macos-latest
@@ -44,17 +46,19 @@ jobs:
           clang -dynamiclib -O3 \
             -I./sqlite \
             -I. \
-            hierarchical_engine.c \
+            -I./src \
+            src/he_stmt_cache.c src/he_utils.c src/he_repo.c src/he_mapper.c src/he_query.c \
+            src/he_csv.c src/he_services.c src/he_extension.c \
             yyjson.c \
             -o hierarchical_engine.dylib \
             -undefined suppress -flat_namespace
-        working-directory: hierarchical_engine  # ← ADICIONE ISSO
+        working-directory: hierarchical_engine
       
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-macos
-          path: hierarchical_engine/hierarchical_engine.dylib  # ← AJUSTE O PATH
+          path: hierarchical_engine/hierarchical_engine.dylib
 
   build-windows:
     runs-on: windows-latest
@@ -66,15 +70,16 @@ jobs:
       
       - name: Build for Windows
         run: |
-          cl /LD /O2 /I./sqlite /I. `
-            hierarchical_engine.c `
+          cl /LD /O2 /I./sqlite /I. /I./src `
+            src/he_stmt_cache.c src/he_utils.c src/he_repo.c src/he_mapper.c src/he_query.c `
+            src/he_csv.c src/he_services.c src/he_extension.c `
             yyjson.c `
             /Fehierarchical_engine.dll
         shell: pwsh
-        working-directory: hierarchical_engine  # ← ADICIONE ISSO
+        working-directory: hierarchical_engine
       
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: hierarchical_engine-windows
-          path: hierarchical_engine/hierarchical_engine.dll  # ← AJUSTE O PATH
+          path: hierarchical_engine/hierarchical_engine.dll

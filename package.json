@@ -5,24 +5,22 @@
   "main": "index.js",
   "scripts": {
     "start": "npx tsx src/index.ts",
-    "build:pg": "sh pg_extension/build.sh",
-    "test:pg": "npx tsx src/index.pg.test.ts && npx tsx src/import-export.pg.test.ts",
-    "test": "npm run test:pg"
+    "build": "sh hierarchical_engine/build.sh",
+    "test": "npx tsx src/test/index.ts",
+    "bench": "npx tsx src/bench.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^26.1.1",
-    "better-sqlite3": "^12.11.1",
-    "embedded-postgres": "^18.4.0-beta.17",
+    "libsql": "^0.5.29",
     "pg": "^8.22.0",
     "ts-node": "^10.9.2",
     "typescript": "^7.0.2"
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
     "@types/pg": "^8.20.3",
     "tsx": "^4.23.1"
   }
