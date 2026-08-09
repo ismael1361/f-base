@@ -74,6 +74,8 @@ void he_stmt_cache_destroy(void *ptr)
     sqlite3_finalize(cache->update_empty);
   if (cache->delete_range)
     sqlite3_finalize(cache->delete_range);
+  if (cache->delete_exact)
+    sqlite3_finalize(cache->delete_exact);
   if (cache->revision)
     sqlite3_finalize(cache->revision);
   if (cache->type)
@@ -230,6 +232,21 @@ static HeStmtCache *he_stmt_cache_create(sqlite3 *db,
 
   sql = sqlite3_mprintf("DELETE FROM %s WHERE path >= ?1 AND path < ?2", nodes);
   if (sql && prep_stmt(cache, &cache->delete_range, sql, err))
+    ;
+  else
+    ok = 0;
+  sqlite3_free(sql);
+  if (!ok)
+    goto fail;
+
+  // Deleção EXATA + subtree delimitado por '/' (NUNCA alcança irmãs por
+  // prefixo de texto: "user" não remove "username"). Usado no fast path
+  // de update_json para remover chaves e containers sem colaterais.
+  sql = sqlite3_mprintf(
+      "DELETE FROM %s WHERE path = ?1 "
+      "OR (path >= (?1 || '/') AND path < (?1 || '0'))",
+      nodes);
+  if (sql && prep_stmt(cache, &cache->delete_exact, sql, err))
     ;
   else
     ok = 0;

@@ -78,7 +78,16 @@ ctx = setupLibsql();
 
   assert.equal(parsed.name, "Ada Lovelace");
   assert.deepEqual(parsed.address, { city: "Londres", zip: "12345" });
-  assert.deepEqual(parsed.tags, ["genius", "pioneer"]);
+  // tags: array literal → objeto com chaves UUID (modelo objeto-only)
+  const tags = parsed.tags as Record<string, string>;
+  assert.ok(tags && !Array.isArray(tags), "tags deve ser objeto (não array)");
+  const tagKeys = Object.keys(tags);
+  assert.equal(tagKeys.length, 2, "tags com 2 elementos");
+  assert.ok(
+    tagKeys.every((k) => /^[0-9a-f]{32}$/.test(k)),
+    "chaves UUID (32 hex)",
+  );
+  assert.deepEqual(Object.values(tags).sort(), ["genius", "pioneer"], "valores preservados");
 
   console.log("   ✅ Export JSON aninhado funcionou");
 }
@@ -440,7 +449,9 @@ ctx = setupLibsql();
   const csvStr = storeExport("/with-array/1", "csv").toString("utf-8");
 
   assert.ok(csvStr.includes("/with-array/1/tags/"), "Deve conter container tags/");
-  assert.ok(csvStr.includes("/with-array/1/tags/0"), "Deve conter nó tags/0");
+  // Filhos com chave UUID (32 hex) — nunca índice numérico (modelo objeto-only)
+  const uuidLeaf = /\/with-array\/1\/tags\/[0-9a-f]{32}/.test(csvStr);
+  assert.ok(uuidLeaf, "Deve conter nós tags/<uuid> (chave UUID)");
 
   console.log("   ✅ Export CSV com array funcionou");
 }

@@ -44,8 +44,8 @@ char *he_query_json(HeStmtCache *cache, const char *prefix, const char *query_st
 /* export_csv(prefix) → CSV (RFC 4180) */
 char *he_export_csv(HeStmtCache *cache, const char *prefix, char **err);
 
-/* import_csv(prefix, csv_text, max_inline_size) → revision */
+/* import_csv(prefix, csv_text, max_inline_size, options_json) → revision */
 char *he_import_csv(HeStmtCache *cache, const char *prefix, const char *csv_text,
-                    size_t max_inline_size, char **err);
+                    size_t max_inline_size, const char *options_json, char **err);
 
 #endif /* HE_SERVICES_H */

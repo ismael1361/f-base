@@ -39,7 +39,14 @@ function tableNames(): string[] {
   posts.set("/x", { title: "Post A", tags: ["a"] });
 
   assert.deepEqual(users.get("/x"), { name: "Alice", age: 30 }, "default /x = Alice");
-  assert.deepEqual(posts.get("/x"), { title: "Post A", tags: ["a"] }, "posts /x = Post A");
+  const post = posts.get("/x") as any;
+  assert.equal(post.title, "Post A", "posts /x = Post A");
+  // tags: array literal → objeto com chave UUID (modelo objeto-only)
+  assert.ok(post.tags && !Array.isArray(post.tags), "tags deve ser objeto");
+  const postTagKeys = Object.keys(post.tags);
+  assert.equal(postTagKeys.length, 1);
+  assert.ok(/^[0-9a-f]{32}$/.test(postTagKeys[0]!), "chave UUID");
+  assert.equal(Object.values(post.tags)[0], "a");
 
   // Mesmo path, storages independentes — um não afeta o outro
   posts.update("/x", { title: "Post B" });

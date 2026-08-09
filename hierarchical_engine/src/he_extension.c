@@ -25,7 +25,10 @@
 #include <sqlite3ext.h>
 SQLITE_EXTENSION_INIT1
 
+#include <yyjson.h>
+
 #include "he_types.h"
+#include "he_utils.h"
 #include "he_services.h"
 #include "he_stmt_cache.h"
 
@@ -258,6 +261,76 @@ static void query_json_func(sqlite3_context *context, int argc, sqlite3_value **
 }
 
 /* ===========================================================================
+ * FUNÇÃO: PROJECT_JSON (JSON -> JSON projetado)
+ * ===========================================================================
+ * project_json(json_text, options_json) → copia json_text aplicando a
+ * projeção include/exclude (paths pontilhados, exclude vence include).
+ * Retorna NULL se json_text for inválido/ausente; devolve o original
+ * quando options está vazio ou não tem include/exclude.
+ */
+static void project_json_func(sqlite3_context *context, int argc,
+                              sqlite3_value **argv)
+{
+  if (argc != 2)
+  {
+    sqlite3_result_error(context,
+                         "Usage: project_json(json_text, options_json)", -1);
+    return;
+  }
+
+  const char *json_text = (const char *)sqlite3_value_text(argv[0]);
+  if (!json_text || json_text[0] == '\0')
+  {
+    sqlite3_result_null(context);
+    return;
+  }
+
+  const char *options_str = (const char *)sqlite3_value_text(argv[1]);
+  if (!options_str || options_str[0] == '\0')
+  {
+    // Sem projeção → devolve o texto original (fast path)
+    sqlite3_result_text(context, json_text, -1, SQLITE_STATIC);
+    return;
+  }
+
+  yyjson_doc *data_doc = yyjson_read(json_text, strlen(json_text), 0);
+  if (!data_doc)
+  {
+    sqlite3_result_null(context);
+    return;
+  }
+  yyjson_val *root = yyjson_doc_get_root(data_doc);
+
+  HeProjection proj;
+  memset(&proj, 0, sizeof(proj));
+  yyjson_doc *opt_doc = yyjson_read(options_str, strlen(options_str), 0);
+  if (opt_doc)
+  {
+    he_projection_parse(yyjson_doc_get_root(opt_doc), &proj);
+    yyjson_doc_free(opt_doc);
+  }
+
+  yyjson_mut_doc *mut_doc = yyjson_mut_doc_new(NULL);
+  yyjson_mut_val *out = he_project_value(mut_doc, root, &proj);
+  if (out)
+    yyjson_mut_doc_set_root(mut_doc, out);
+  char *json_out = out ? yyjson_mut_write(mut_doc, 0, NULL) : NULL;
+  yyjson_mut_doc_free(mut_doc);
+  yyjson_doc_free(data_doc);
+
+  if (!json_out)
+  {
+    sqlite3_result_null(context);
+    return;
+  }
+
+  // Normaliza para alocação sqlite3 (destrutor uniforme do controller)
+  char *result = sqlite3_mprintf("%s", json_out);
+  free(json_out);
+  finish_result(context, result, NULL);
+}
+
+/* ===========================================================================
  * FUNÇÃO: EXPORT_CSV (Nodes -> CSV)
  * ===========================================================================
  */
@@ -303,11 +376,11 @@ static void import_csv_func(sqlite3_context *context, int argc,
   int off;
   const char *table = he_parse_table(argv, &off);
 
-  // import_csv([table,] prefix, csv_text [, max_inline_size])
-  if (argc < off + 2 || argc > off + 3)
+  // import_csv([table,] prefix, csv_text [, max_inline_size] [, options_json])
+  if (argc < off + 2 || argc > off + 4)
   {
     sqlite3_result_error(context,
-                         "Usage: import_csv([table,] prefix, csv_text [, max_inline_size])", -1);
+                         "Usage: import_csv([table,] prefix, csv_text [, max_inline_size] [, options_json])", -1);
     return;
   }
 
@@ -319,7 +392,24 @@ static void import_csv_func(sqlite3_context *context, int argc,
     return;
   }
 
-  size_t max_inline_size = parse_max_inline(argc, argv, off);
+  // O 3º arg extra pode ser max_inline_size (numérico) OU options_json
+  // (objeto JSON começando com '{'). Desambigua pelo conteúdo.
+  size_t max_inline_size = DEFAULT_MAX_INLINE_SIZE;
+  const char *options_str = NULL;
+  if (argc >= off + 3)
+  {
+    const char *extra = (const char *)sqlite3_value_text(argv[off + 2]);
+    if (extra && extra[0] == '{')
+    {
+      options_str = extra;
+    }
+    else
+    {
+      max_inline_size = parse_max_inline(argc, argv, off);
+      if (argc >= off + 4)
+        options_str = (const char *)sqlite3_value_text(argv[off + 3]);
+    }
+  }
 
   char *err = NULL;
   HeStmtCache *cache = he_stmt_cache_get(sqlite3_context_db_handle(context),
@@ -329,7 +419,8 @@ static void import_csv_func(sqlite3_context *context, int argc,
     finish_result(context, NULL, err);
     return;
   }
-  char *result = he_import_csv(cache, prefix_input, csv_text, max_inline_size, &err);
+  char *result = he_import_csv(cache, prefix_input, csv_text,
+                               max_inline_size, options_str, &err);
   finish_result(context, result, err);
 }
 
@@ -409,6 +500,7 @@ int sqlite3_extension_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routi
   sqlite3_create_function(db, "update_json", -1, SQLITE_UTF8, 0, update_json_func, 0, 0);
   sqlite3_create_function(db, "extract_json", -1, SQLITE_UTF8, 0, extract_json_func, 0, 0);
   sqlite3_create_function(db, "query_json", -1, SQLITE_UTF8, 0, query_json_func, 0, 0);
+  sqlite3_create_function(db, "project_json", 2, SQLITE_UTF8, 0, project_json_func, 0, 0);
   sqlite3_create_function(db, "export_csv", -1, SQLITE_UTF8, 0, export_csv_func, 0, 0);
   sqlite3_create_function(db, "import_csv", -1, SQLITE_UTF8, 0, import_csv_func, 0, 0);
 

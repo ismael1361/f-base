@@ -12,6 +12,9 @@
 #include <stddef.h>
 #include "he_types.h"
 
+/* Tipo opaco sqlite3_str (definido via sqlite3ext.h apenas nos .c) */
+typedef struct sqlite3_str sqlite3_str;
+
 /* ===========================================================================
  * ESCAPE
  * ===========================================================================
@@ -19,6 +22,10 @@
 /* Escapa um valor para CSV (RFC 4180). Retorna string alocada com
  * sqlite3_malloc — caller deve sqlite3_free(). */
 char *he_csv_escape(const char *value);
+
+/* Append de um valor CSV diretamente em um sqlite3_str (RFC 4180), sem
+ * alocação intermediária — hot path do export_csv. */
+void he_csv_escape_append(sqlite3_str *out, const char *value);
 
 /* ===========================================================================
  * PARSE

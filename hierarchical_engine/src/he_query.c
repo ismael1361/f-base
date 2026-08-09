@@ -36,7 +36,30 @@ typedef struct
   int order_count;
   size_t skip;
   size_t take;
+  HeProjection proj; /* include/exclude de campos (vazio = sem projeção) */
 } HeQuerySpec;
+
+/// Pré-parseia uma chave pontilhada ("address.city") em segmentos — evita
+/// copiar + strtok a cada avaliação de filtro/ordenação (hot path).
+static void query_split_key(const char *key, char segments[][64], int *count)
+{
+  int sc = 0;
+  const char *p = key;
+  while (*p && sc < 8)
+  {
+    const char *dot = strchr(p, '.');
+    size_t len = dot ? (size_t)(dot - p) : strlen(p);
+    if (len >= 64)
+      len = 63;
+    memcpy(segments[sc], p, len);
+    segments[sc][len] = '\0';
+    sc++;
+    if (!dot)
+      break;
+    p = dot + 1;
+  }
+  *count = sc;
+}
 
 /// Parseia filtros, ordenação e paginação do JSON da query (idêntico ao
 /// comportamento original; extraído para eliminar duplicação entre o
@@ -68,7 +91,9 @@ static void query_spec_parse(yyjson_val *query_root, HeQuerySpec *spec)
       if (key_v && yyjson_is_str(key_v) && op_v && yyjson_is_str(op_v))
       {
         QueryFilter *flt = &spec->filters[spec->filter_count];
-        strncpy(flt->key, yyjson_get_str(key_v), sizeof(flt->key) - 1);
+        const char *kstr = yyjson_get_str(key_v);
+        strncpy(flt->key, kstr, sizeof(flt->key) - 1);
+        query_split_key(kstr, flt->segments, &flt->seg_count);
         strncpy(flt->op, yyjson_get_str(op_v), sizeof(flt->op) - 1);
         if (cmp_v)
         {
@@ -101,7 +126,9 @@ static void query_spec_parse(yyjson_val *query_root, HeQuerySpec *spec)
       if (k && yyjson_is_str(k))
       {
         QueryOrder *ord = &spec->orders[spec->order_count];
-        strncpy(ord->key, yyjson_get_str(k), sizeof(ord->key) - 1);
+        const char *kstr = yyjson_get_str(k);
+        strncpy(ord->key, kstr, sizeof(ord->key) - 1);
+        query_split_key(kstr, ord->segments, &ord->seg_count);
         ord->ascending = !a ||
                          (yyjson_is_bool(a) && yyjson_get_bool(a)) ||
                          (yyjson_is_int(a) && yyjson_get_int(a) == 1);
@@ -117,6 +144,9 @@ static void query_spec_parse(yyjson_val *query_root, HeQuerySpec *spec)
   spec->take = take_val && yyjson_is_int(take_val) ? (size_t)yyjson_get_int(take_val) : 0;
   if (spec->take == 0)
     spec->take = (size_t)-1;
+
+  // Projeção de campos (include/exclude — paths pontilhados)
+  he_projection_parse(query_root, &spec->proj);
 }
 
 /* ===========================================================================
@@ -127,20 +157,15 @@ static void query_spec_parse(yyjson_val *query_root, HeQuerySpec *spec)
 /// Avalia um filtro em um valor JSON
 static bool evaluate_filter(yyjson_val *obj, QueryFilter *filter)
 {
-  // Navega pela chain de chaves (ex: "address.city")
+  // Navega pela chain de chaves (ex: "address.city") usando os segmentos
+  // pré-parseados no query_spec_parse — sem copiar + strtok por avaliação.
   yyjson_val *val = obj;
-  char key_copy[256];
-  strncpy(key_copy, filter->key, sizeof(key_copy) - 1);
-  key_copy[sizeof(key_copy) - 1] = '\0';
-
-  char *part = strtok(key_copy, ".");
-  while (part && val)
+  for (int s = 0; s < filter->seg_count && val; s++)
   {
     if (yyjson_is_obj(val))
-      val = yyjson_obj_get(val, part);
+      val = yyjson_obj_get(val, filter->segments[s]);
     else
       val = NULL;
-    part = strtok(NULL, ".");
   }
 
   if (!val)
@@ -299,7 +324,119 @@ static bool evaluate_filter(yyjson_val *obj, QueryFilter *filter)
  * ===========================================================================
  */
 
-/// Compara duas SortEntry de acordo com as QueryOrder.
+/// Igual a evaluate_filter, mas para valores MUTÁVEIS (yyjson_mut_val*):
+/// o streaming reconstrói os filhos diretos como mut_val (lista circular),
+/// então yyjson_obj_get (que assume memória contígua de imutável) leria
+/// memória errada. A navegação por chaves usa yyjson_mut_obj_get.
+static bool evaluate_filter_mut(yyjson_mut_val *obj, QueryFilter *filter)
+{
+  yyjson_mut_val *val = obj;
+  for (int s = 0; s < filter->seg_count && val; s++)
+  {
+    if (yyjson_mut_is_obj(val))
+      val = yyjson_mut_obj_get(val, filter->segments[s]);
+    else
+      val = NULL;
+  }
+
+  if (!val)
+  {
+    if (strcmp(filter->op, "!exists") == 0)
+      return true;
+    if (strcmp(filter->op, "exists") == 0)
+      return false;
+    return false;
+  }
+
+  double num_val = 0;
+  bool is_num = false;
+  const char *str_val = NULL;
+
+  if (yyjson_mut_is_num(val))
+  {
+    num_val = yyjson_mut_get_num(val);
+    is_num = true;
+  }
+  else if (yyjson_mut_is_bool(val))
+  {
+    num_val = yyjson_mut_get_bool(val) ? 1 : 0;
+    is_num = true;
+  }
+  else if (yyjson_mut_is_str(val))
+  {
+    str_val = yyjson_mut_get_str(val);
+  }
+  else if (yyjson_mut_is_null(val))
+  {
+    if (strcmp(filter->op, "==") == 0 && strcmp(filter->compare, "null") == 0)
+      return true;
+    if (strcmp(filter->op, "!=") == 0 && strcmp(filter->compare, "null") != 0)
+      return true;
+    return false;
+  }
+  else
+  {
+    return false;
+  }
+
+  const char *op = filter->op;
+  yyjson_val *compare_val = (yyjson_val *)filter->compare_val;
+
+  if (is_num && compare_val && yyjson_is_num(compare_val))
+  {
+    double cmp = yyjson_get_num(compare_val);
+    if (strcmp(op, "<") == 0)
+      return num_val < cmp;
+    if (strcmp(op, "<=") == 0)
+      return num_val <= cmp;
+    if (strcmp(op, "==") == 0)
+      return num_val == cmp;
+    if (strcmp(op, "!=") == 0)
+      return num_val != cmp;
+    if (strcmp(op, ">=") == 0)
+      return num_val >= cmp;
+    if (strcmp(op, ">") == 0)
+      return num_val > cmp;
+    if (strcmp(op, "between") == 0 && yyjson_is_arr(compare_val))
+    {
+      yyjson_val *lo = yyjson_arr_get(compare_val, 0);
+      yyjson_val *hi = yyjson_arr_get(compare_val, 1);
+      if (lo && hi && yyjson_is_num(lo) && yyjson_is_num(hi))
+        return num_val >= yyjson_get_num(lo) && num_val <= yyjson_get_num(hi);
+    }
+  }
+
+  if (str_val != NULL)
+  {
+    if (strcmp(op, "==") == 0)
+      return strcmp(str_val, filter->compare) == 0;
+    if (strcmp(op, "!=") == 0)
+      return strcmp(str_val, filter->compare) != 0;
+    if (strcmp(op, "like") == 0)
+      return strstr(str_val, filter->compare) != NULL;
+    if (strcmp(op, "matches") == 0)
+      return strstr(str_val, filter->compare) != NULL;
+    if (strcmp(op, "in") == 0 && compare_val && yyjson_is_arr(compare_val))
+    {
+      size_t n = yyjson_arr_size(compare_val);
+      for (size_t i = 0; i < n; i++)
+      {
+        yyjson_val *item = yyjson_arr_get(compare_val, i);
+        if (yyjson_is_str(item) && strcmp(str_val, yyjson_get_str(item)) == 0)
+          return true;
+        if (yyjson_is_num(item) && is_num && yyjson_get_num(item) == num_val)
+          return true;
+      }
+      return false;
+    }
+  }
+
+  if (strcmp(op, "exists") == 0)
+    return true;
+  if (strcmp(op, "!exists") == 0)
+    return false;
+  return false;
+} /// Compara duas SortEntry de acordo com as QueryOrder.
 /// Recebe o array de orders via arg (DIP — elimina o antigo g_sort_orders).
 static int compare_entries(const void *a, const void *b, void *arg)
 {
@@ -312,25 +449,20 @@ static int compare_entries(const void *a, const void *b, void *arg)
 
   for (int i = 0; orders[i].key[0] != '\0'; i++)
   {
-    // Navega pela chain de chaves
+    // Navega pela chain de chaves usando os segmentos pré-parseados
+    // (sem copiar + strtok por comparação — hot path do qsort).
     yyjson_val *va = (yyjson_val *)ea->val;
     yyjson_val *vb = (yyjson_val *)eb->val;
-    char key_copy[256];
-    strncpy(key_copy, orders[i].key, sizeof(key_copy) - 1);
-    key_copy[sizeof(key_copy) - 1] = '\0';
-
-    char *part = strtok(key_copy, ".");
-    while (part && va && vb)
+    for (int s = 0; s < orders[i].seg_count && va && vb; s++)
     {
       if (yyjson_is_obj(va))
-        va = yyjson_obj_get(va, part);
+        va = yyjson_obj_get(va, orders[i].segments[s]);
       else
         va = NULL;
       if (yyjson_is_obj(vb))
-        vb = yyjson_obj_get(vb, part);
+        vb = yyjson_obj_get(vb, orders[i].segments[s]);
       else
         vb = NULL;
-      part = strtok(NULL, ".");
     }
 
     double na = 0, nb = 0;
@@ -764,12 +896,12 @@ static char *do_query_wildcard(HeStmtCache *cache, const char *pattern,
   size_t start = spec.skip < filtered_count ? spec.skip : filtered_count;
   size_t end = (spec.take < filtered_count - start) ? (start + spec.take) : filtered_count;
 
-  // ── 10. Monta array de resultados ──
+  // ── 10. Monta array de resultados (com projeção include/exclude) ──
   for (size_t i = start; i < end; i++)
   {
     if (filtered[i].val)
     {
-      yyjson_mut_val *copy = yyjson_val_mut_copy(result_doc, (yyjson_val *)filtered[i].val);
+      yyjson_mut_val *copy = he_project_value(result_doc, (yyjson_val *)filtered[i].val, &spec.proj);
       if (copy)
         yyjson_mut_arr_append(result_arr, copy);
     }
@@ -810,6 +942,342 @@ static char *do_query_wildcard(HeStmtCache *cache, const char *pattern,
  * ===========================================================================
  */
 
+/// Detecta o padrão de coleção "/pai/*" — um ÚNICO wildcard puro "*" no
+/// ÚLTIMO segmento, sem variáveis. Para esses padrões, o motor extrai o
+/// container pai UMA única vez e itera os filhos em memória (o antigo
+/// caminho wildcard fazia 1 extract_json POR filho — O(n×subtree)).
+static bool wildcard_is_single_tail(const char *path)
+{
+  if (!path || !*path)
+    return false;
+  const char *star = strchr(path, '*');
+  if (!star || star[1] != '\0') /* '*' deve ser o último caractere */
+    return false;
+  if (strchr(path, '$') != NULL) /* sem $var */
+    return false;
+  if (strchr(path + 1, '/') == NULL) /* precisa de um segmento pai fixo antes do asterisco final */
+    return false;
+  return true;
+}
+
+/// Comparador para ordenar pares (chave, valor) lexicograficamente pela chave
+/// — paridade com o ORDER BY path do caminho wildcard. O hashmap do yyjson
+/// (modo read) NÃO tem hash table: yyjson_obj_get faz busca LINEAR, então
+/// NUNCA usar obj_get por chave em objetos grandes (5000 chaves ≈ 110ms).
+/// Coletar os pares na iteração + qsort de structs custa ~3ms.
+typedef struct
+{
+  const char *key;
+  yyjson_val *val;
+} KeyValPair;
+
+static int cmp_keyval_pair(const void *a, const void *b)
+{
+  const KeyValPair *pa = (const KeyValPair *)a;
+  const KeyValPair *pb = (const KeyValPair *)b;
+  return strcmp(pa->key, pb->key);
+}
+
+/* ===========================================================================
+ * QUERY SINGLE-TAIL COM STREAMING + EARLY EXIT ("/pai/*" sem order)
+ * ===========================================================================
+ * Otimização do caminho de coleção: em vez de materializar o documento
+ * inteiro (extract → parse → coleta → filtro → take), varre as linhas
+ * UMA vez em ORDER BY path e reconstrói os filhos diretos do root de forma
+ * INCREMENTAL (mesma stack do he_extract_json). Quando um filho direto
+ * "fecha" (chegou o próximo filho direto ou o scan terminou), aplica
+ * filtro + projeção + skip/take NA HORA e o descarta. Com `take` pequeno
+ * e filtro seletivo, o loop para cedo — sem construir o JSON do doc todo.
+ *
+ * Quando aplicar: single-tail SEM order (com order todos os candidatos são
+ * necessários — fallback para o pipeline atual).
+ *
+ * Retorna string alocada (array JSON) em sucesso; NULL sem *err quando a
+ * otimização NÃO se aplica (order presente — o caller usa o caminho atual);
+ * NULL com *err em erro real.
+ */
+static char *do_query_single_tail_stream(HeStmtCache *cache,
+                                         const char *parent,
+                                         const char *query_str, char **err)
+{
+  if (err)
+    *err = NULL;
+
+  // ── 1. Parseia a query e extrai o spec ──
+  yyjson_doc *query_doc = yyjson_read(query_str, strlen(query_str), 0);
+  if (!query_doc)
+  {
+    if (err)
+      *err = sqlite3_mprintf("Invalid query JSON in single-tail query");
+    return NULL;
+  }
+  yyjson_val *query_root = yyjson_doc_get_root(query_doc);
+
+  HeQuerySpec spec;
+  query_spec_parse(query_root, &spec);
+
+  // Com order, TODOS os candidatos são necessários — a otimização não se
+  // aplica (fallback para o pipeline atual, que ordena o conjunto todo).
+  if (spec.order_count > 0)
+  {
+    yyjson_doc_free(query_doc);
+    return NULL; /* sem *err → o caller usa o caminho atual */
+  }
+
+  // Projeção include/exclude: he_project_value espera valores IMUTÁVEIS
+  // (yyjson_val_mut_copy no fast path lê memória contígua de imut) — os
+  // filhos do streaming são mut. Cair no fallback (pipeline atual) mantém
+  // a paridade sem duplicar a lógica de projeção mut-aware.
+  if (spec.proj.include_count > 0 || spec.proj.exclude_count > 0)
+  {
+    yyjson_doc_free(query_doc);
+    return NULL; /* sem *err → o caller usa o caminho atual */
+  }
+
+  // ── 2. Prepara o range scan do container pai ──
+  //    parent = "/pai" (sem slash). prefix = "/pai/" — como '/' (0x2F) <
+  //    '0' (0x30), o upper "incrementa o último byte" do prefixo captura
+  //    TODOS os descendentes (range via PRIMARY KEY, ORDER BY path).
+  char prefix[1024];
+  snprintf(prefix, sizeof(prefix), "%s/", parent);
+  char upper[1024];
+  make_upper_bound(prefix, upper, sizeof(upper));
+
+  sqlite3_stmt *stmt = cache->scan;
+  sqlite3_reset(stmt);
+  sqlite3_bind_text(stmt, 1, prefix, -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt, 2, upper, -1, SQLITE_STATIC);
+
+  // ── 3. Stack de reconstrução (mesma mecânica do he_extract_json) ──
+  typedef struct
+  {
+    const char *path; /* cópia sqlite3_malloc — liberada no pop/fim */
+    yyjson_mut_val *val;
+    int depth; /* 0 = root; 1 = filho direto; >1 = aninhado */
+  } StackNode;
+  StackNode stack[2048];
+  int stack_top = 0;
+
+  yyjson_mut_doc *mut_doc = yyjson_mut_doc_new(NULL);
+  yyjson_mut_val *result_arr = yyjson_mut_arr(mut_doc);
+  yyjson_mut_doc_set_root(mut_doc, result_arr);
+
+  size_t added = 0;   /* filhos aprovados já adicionados */
+  size_t skipped = 0; /* filhos processados (p/ skip) */
+  bool root_seen = false;
+  bool done = false;
+  int rc = SQLITE_OK;
+
+  // Root do container (linha "/pai/") — não é um filho, não entra no array
+  yyjson_mut_val *root_val = NULL;
+
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
+  {
+    const char *path = (const char *)sqlite3_column_text(stmt, 0);
+    int type = sqlite3_column_int(stmt, 1);
+    const char *text_val = (const char *)sqlite3_column_text(stmt, 2);
+    if (!path)
+      continue;
+
+    // Profundidade = nº de segmentos além do prefixo.
+    //   "/pai/x"       → 1 (filho direto)
+    //   "/pai/x/"      → 1 (container filho — o trailing slash do próprio
+    //                      nó NÃO conta como separador de descendente)
+    //   "/pai/x/y/"    → 2+ (aninhado)
+    int depth = 1;
+    {
+      const char *s = path + strlen(prefix); /* pula o prefixo "/pai/" */
+      if (*s)
+      {
+        size_t s_len = strlen(s);
+        /* remove o trailing slash final (delimitador do próprio nó) */
+        if (s_len > 0 && s[s_len - 1] == '/')
+          s_len--;
+        for (size_t c = 0; c < s_len; c++)
+          if (s[c] == '/')
+            depth++;
+      }
+      else
+      {
+        depth = 0; /* linha do root "/pai/" */
+      }
+    }
+
+    if (!root_seen)
+    {
+      // Primeira linha = root do container (pode ser só ele = doc vazio).
+      // Modelo objeto-only: type=2 legado é lido como objeto (compat).
+      root_seen = true;
+      root_val = make_value_from_storage(mut_doc, type, text_val);
+      if (!root_val)
+        root_val = yyjson_mut_obj(mut_doc);
+      stack[stack_top++] = (StackNode){sqlite3_mprintf("%s", path), root_val, 0};
+      continue;
+    }
+
+    if (depth <= 1)
+    {
+      // ── FECHAMENTO do filho direto anterior (se houver) ──
+      // O child (stack[1].val) é um mut_val DETACHED (árvore completa já
+      // reconstruída, sem pai) — avaliar filtro e MOVÊ-LO para o array de
+      // resultados (append sem cópia: evita yyjson_val_mut_copy, que só
+      // funciona para valores imutáveis).
+      if (stack_top > 1)
+      {
+        yyjson_mut_val *child = stack[1].val;
+        bool match = true;
+        for (int f = 0; f < spec.filter_count && match; f++)
+        {
+          if (!spec.filters[f].valid)
+            continue;
+          match = evaluate_filter_mut(child, &spec.filters[f]);
+        }
+        if (match)
+        {
+          if (skipped < spec.skip)
+          {
+            skipped++;
+          }
+          else
+          {
+            yyjson_mut_arr_append(result_arr, child);
+            added++;
+            if (added >= spec.take)
+              done = true; /* early exit */
+          }
+        }
+        // Libera a subtree do filho direto fechado (paths da stack)
+        while (stack_top > 1)
+          sqlite3_free((void *)stack[--stack_top].path);
+        if (done)
+          break;
+      }
+
+      // ── Novo filho direto ──
+      yyjson_mut_val *child = make_value_from_storage(mut_doc, type, text_val);
+      if (!child)
+        child = yyjson_mut_obj(mut_doc);
+      stack[stack_top++] = (StackNode){sqlite3_mprintf("%s", path), child, 1};
+      continue;
+    }
+
+    // ── Nó aninhado (depth > 1): mesmo fluxo do he_extract_json ──
+    // 1. Encontra o pai na stack (pop dos que saíram do caminho)
+    while (stack_top > 1)
+    {
+      const char *sp = stack[stack_top - 1].path;
+      size_t sp_len = strlen(sp);
+      size_t slen = sp_len;
+      while (slen > 0 && sp[slen - 1] == '/')
+        slen--;
+      if (strncmp(path, sp, slen) == 0 &&
+          (path[slen] == '/' || path[slen] == '\0'))
+        break;
+      sqlite3_free((void *)stack[--stack_top].path);
+    }
+    yyjson_mut_val *parent = stack_top > 0 ? stack[stack_top - 1].val : root_val;
+
+    // 2. Extrai a chave (último segmento)
+    char key_buf[256];
+    const char *key = key_buf;
+    int path_end = (int)strlen(path);
+    if (path_end > 0 && path[path_end - 1] == '/')
+      path_end--;
+    const char *last_slash = NULL;
+    for (int si = path_end - 1; si >= 0; si--)
+    {
+      if (path[si] == '/')
+      {
+        last_slash = &path[si];
+        break;
+      }
+    }
+    if (last_slash)
+    {
+      int key_len = path_end - (int)(last_slash - path) - 1;
+      if (key_len > 0 && key_len < (int)sizeof(key_buf) - 1)
+      {
+        memcpy(key_buf, last_slash + 1, key_len);
+        key_buf[key_len] = '\0';
+      }
+      else
+        key = path;
+    }
+    else
+      key = path;
+
+    // 3. Cria o valor e adiciona ao pai — modelo OBJETO-ONLY: o pai nunca é
+    //    array (dados legados type=2 são lidos como objeto), então obj_add.
+    yyjson_mut_val *child = make_value_from_storage(mut_doc, type, text_val);
+    if (!child)
+      child = yyjson_mut_obj(mut_doc);
+    yyjson_mut_obj_add(parent, yyjson_mut_strcpy(mut_doc, key), child);
+
+    // 4. Se container, empilha
+    bool is_container = (type == TYPE_OBJECT || type == 2); /* 2 = LEGADO */
+    if (is_container && stack_top < 2048)
+      stack[stack_top++] = (StackNode){sqlite3_mprintf("%s", path), child, depth};
+  }
+
+  // ── Fim do scan: fecha o ÚLTIMO filho direto (se não houve early exit) ──
+  if (!done && stack_top > 1)
+  {
+    yyjson_mut_val *child = stack[1].val;
+    bool match = true;
+    for (int f = 0; f < spec.filter_count && match; f++)
+    {
+      if (!spec.filters[f].valid)
+        continue;
+      match = evaluate_filter_mut(child, &spec.filters[f]);
+    }
+    if (match)
+    {
+      if (skipped < spec.skip)
+        skipped++;
+      else
+      {
+        yyjson_mut_arr_append(result_arr, child);
+        added++;
+      }
+    }
+  }
+
+  sqlite3_reset(stmt);
+
+  // Libera os paths da stack (cópias sqlite3_malloc)
+  for (int i = 0; i < stack_top; i++)
+    sqlite3_free((void *)stack[i].path);
+
+  // Container pai inexistente → NULL (SQL NULL), idêntico ao caminho atual
+  // (o extract devolvia 'null' → data_doc NULL → retorno NULL).
+  if (!root_seen)
+  {
+    yyjson_mut_doc_free(mut_doc);
+    yyjson_doc_free(query_doc);
+    return NULL;
+  }
+
+  // ── Serializa SÓ o array de resultados ──
+  // O root do container (stack[0]) está DETACHED do array — o mut_doc tem
+  // como root o result_arr. yyjson_mut_write serializa a partir do root
+  // definido, então filhos órfãos não são serializados.
+  char *json_out = yyjson_mut_write(mut_doc, 0, NULL);
+  yyjson_mut_doc_free(mut_doc);
+  yyjson_doc_free(query_doc);
+
+  if (!json_out)
+  {
+    if (err)
+      *err = sqlite3_mprintf("Failed to serialize query result");
+    return NULL;
+  }
+
+  // Normaliza para alocação sqlite3 (destrutor uniforme no controller)
+  char *out = sqlite3_mprintf("%s", json_out);
+  free(json_out);
+  return out;
+}
+
 /// query_json(prefix, query_json) — dispatch wildcard vs direto.
 /// Retorna string alocada (array JSON) ou NULL (com *err se erro).
 char *he_query_execute(HeStmtCache *cache, const char *prefix_input,
@@ -826,8 +1294,23 @@ char *he_query_execute(HeStmtCache *cache, const char *prefix_input,
 
   if (has_wildcard)
   {
-    // ─── WILDCARD MULTI-NÍVEL: busca paths que casam o padrão ───
-    return do_query_wildcard(cache, prefix_input, query_str, err);
+    if (wildcard_is_single_tail(prefix_input))
+    {
+      // ─── "/pai/*" (coleção) → tenta o caminho STREAMING (early-exit);
+      //     com order, cai no caminho direto (fallback).
+      char parent[1024];
+      wildcard_fixed_prefix(prefix_input, parent, sizeof(parent)); // "/pai/"
+      path_without_trailing_slash(parent, parent, sizeof(parent)); // "/pai"
+      char *streamed = do_query_single_tail_stream(cache, parent, query_str, err);
+      if (streamed || (err && *err))
+        return streamed;
+      prefix_input = parent; // fallback → pipeline atual abaixo
+    }
+    else
+    {
+      // ─── WILDCARD MULTI-NÍVEL: busca paths que casam o padrão ───
+      return do_query_wildcard(cache, prefix_input, query_str, err);
+    }
   }
 
   // Normaliza o prefixo
@@ -890,23 +1373,39 @@ char *he_query_execute(HeStmtCache *cache, const char *prefix_input,
   }
   else if (yyjson_is_obj(data_root))
   {
+    // Coleta os pares (chave, valor) na iteração e ordena lexicograficamente
+    // pela chave — paridade com o ORDER BY path do caminho wildcard (a ordem
+    // do hashmap do yyjson é arbitrária). NUNCA usar yyjson_obj_get aqui:
+    // sem hash table, cada lookup é O(n) (5000 chaves ≈ 110ms).
     total = yyjson_obj_size(data_root);
     entries = (SortEntry *)calloc(total, sizeof(SortEntry));
-    size_t i = 0;
-    yyjson_obj_iter iter;
-    yyjson_obj_iter_init(data_root, &iter);
-    yyjson_val *k, *v;
-    while ((k = yyjson_obj_iter_next(&iter)))
+    KeyValPair *pairs = (KeyValPair *)calloc(total, sizeof(KeyValPair));
+    if (!pairs)
     {
-      v = yyjson_obj_iter_get_val(k);
-      if (i < total)
+      free(entries);
+      entries = NULL;
+      total = 0;
+    }
+    else
+    {
+      size_t i = 0;
+      yyjson_obj_iter iter;
+      yyjson_obj_iter_init(data_root, &iter);
+      yyjson_val *k;
+      while ((k = yyjson_obj_iter_next(&iter)) && i < total)
       {
-        entries[i].val = (void *)v;
-        entries[i].index = i;
+        pairs[i].key = yyjson_get_str(k);
+        pairs[i].val = yyjson_obj_iter_get_val(k);
         i++;
       }
+      qsort(pairs, total, sizeof(KeyValPair), cmp_keyval_pair);
+      for (size_t idx = 0; idx < total; idx++)
+      {
+        entries[idx].val = (void *)pairs[idx].val;
+        entries[idx].index = idx;
+      }
+      free(pairs);
     }
-    total = i;
   }
   else
   {
@@ -957,7 +1456,7 @@ char *he_query_execute(HeStmtCache *cache, const char *prefix_input,
   size_t start = spec.skip < filtered_count ? spec.skip : filtered_count;
   size_t end = (spec.take < filtered_count - start) ? (start + spec.take) : filtered_count;
 
-  // Monta resultado como array JSON
+  // Monta resultado como array JSON (com projeção include/exclude)
   yyjson_mut_doc *result_doc = yyjson_mut_doc_new(NULL);
   yyjson_mut_val *result_arr = yyjson_mut_arr(result_doc);
   yyjson_mut_doc_set_root(result_doc, result_arr);
@@ -966,7 +1465,7 @@ char *he_query_execute(HeStmtCache *cache, const char *prefix_input,
   {
     if (filtered[i].val)
     {
-      yyjson_mut_val *copy = yyjson_val_mut_copy(result_doc, (yyjson_val *)filtered[i].val);
+      yyjson_mut_val *copy = he_project_value(result_doc, (yyjson_val *)filtered[i].val, &spec.proj);
       if (copy)
         yyjson_mut_arr_append(result_arr, copy);
     }

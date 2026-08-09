@@ -76,17 +76,17 @@ ctx.registerTable("main");
 
   const tagsNode = nodes.find((n: any) => n.path === "/users/100/tags/");
   assert.ok(tagsNode, "/users/100/tags/ deve existir");
-  assert.equal(tagsNode.type, 2, "tags deve ser ARRAY (type=2)");
+  assert.equal(tagsNode.type, 1, "tags deve ser OBJECT (type=1) — modelo objeto-only");
   assert.equal(tagsNode.text_value, "{}", "tags text_value = '{}'");
 
-  const tag0 = nodes.find((n: any) => n.path === "/users/100/tags/0");
-  assert.ok(tag0, "tags/0 deve existir");
-  assert.equal(tag0.type, 5, "tags/0 deve ser STRING");
-  assert.equal(tag0.text_value, '"genius"', "tags/0 = genius");
-
-  const tag1 = nodes.find((n: any) => n.path === "/users/100/tags/1");
-  assert.equal(tag1.type, 5, "tags/1 deve ser STRING");
-  assert.equal(tag1.text_value, '"computer"');
+  // tags: array literal → objeto com chaves UUID (32 hex) — NUNCA índices
+  const tagKids = nodes.filter((n: any) => n.path.startsWith("/users/100/tags/") && !n.path.endsWith("/"));
+  assert.equal(tagKids.length, 2, "tags deve ter 2 filhos");
+  assert.ok(
+    tagKids.every((n: any) => /^\/users\/100\/tags\/[0-9a-f]{32}$/.test(n.path)),
+    "filhos com chave UUID (32 hex)",
+  );
+  assert.deepEqual(tagKids.map((n: any) => n.text_value).sort(), ['"computer"', '"genius"'], "valores preservados (STRING JSON escapado)");
 
   console.log("   ✅ Exemplo 01 passou");
 }
@@ -152,9 +152,16 @@ ctx.registerTable("main");
   assert.equal((doc as any).name, "Alan Turing", "name = Alan Turing");
   assert.equal((doc as any).address, undefined, "address deve ter sido removido");
 
-  assert.ok(Array.isArray((doc as any).tags), "tags deve ser array");
-  assert.equal((doc as any).tags[0], "genius", "tags[0] = genius");
-  assert.equal((doc as any).tags[1], "computer", "tags[1] = computer");
+  // tags: array literal → objeto com chaves UUID (modelo objeto-only)
+  const tags = (doc as any).tags as Record<string, string>;
+  assert.ok(tags && !Array.isArray(tags), "tags deve ser objeto (não array)");
+  const tagKeys = Object.keys(tags);
+  assert.equal(tagKeys.length, 2, "tags com 2 elementos");
+  assert.ok(
+    tagKeys.every((k) => /^[0-9a-f]{32}$/.test(k)),
+    "chaves UUID (32 hex)",
+  );
+  assert.deepEqual(Object.values(tags).sort(), ["computer", "genius"], "valores preservados");
 
   console.log("   ✅ Exemplo 06 passou");
 }
@@ -195,8 +202,10 @@ ctx.registerTable("main");
   assert.equal(item3.type, 3, "item_03 deve ser NUMBER");
   assert.equal(item3.text_value, "400");
 
-  const old0 = nodes.find((n: any) => n.path === "/users/100/tags/0");
-  assert.equal(old0, undefined, "tags/0 deve ter sido deletado");
+  // O array antigo virou objeto com chaves UUID — nenhum filho numérico
+  // (índice) deve restar no container tags.
+  const oldNumeric = nodes.filter((n: any) => n.path.startsWith("/users/100/tags/") && /\/[0-9]+$/.test(n.path));
+  assert.equal(oldNumeric.length, 0, "nenhum filho de índice numérico restante");
 
   const doc = extract("/users/100");
   assert.ok((doc as any).tags, "tags deve existir");
@@ -316,7 +325,8 @@ ctx.registerTable("main");
 
   const doc = extract("/test/empty");
   assert.deepEqual((doc as any).emptyObj, {}, "objeto vazio");
-  assert.deepEqual((doc as any).emptyArr, [], "array vazio");
+  // Array vazio → objeto vazio (modelo objeto-only: não existe array no storage)
+  assert.deepEqual((doc as any).emptyArr, {}, "array vazio vira objeto vazio");
 
   console.log("   ✅ Empty structures passou");
 }
@@ -461,7 +471,15 @@ ctx.registerTable("main");
   assert.equal((doc as any).name, "Alan M. Turing", "name atualizado");
   assert.equal((doc as any).age, 42, "age atualizado");
   assert.equal((doc as any).active, true, "active preservado");
-  assert.deepEqual((doc as any).tags, ["genius", "computer"], "tags container preservado");
+  // tags: array literal → objeto com chaves UUID (preservado intacto)
+  const tags = (doc as any).tags as Record<string, string>;
+  assert.ok(tags && !Array.isArray(tags), "tags deve ser objeto");
+  assert.equal(Object.keys(tags).length, 2, "tags com 2 elementos");
+  assert.ok(
+    Object.keys(tags).every((k) => /^[0-9a-f]{32}$/.test(k)),
+    "chaves UUID",
+  );
+  assert.deepEqual(Object.values(tags).sort(), ["computer", "genius"], "tags preservado");
 
   // Deletar uma chave com null (fast path delete)
   ctx.store.update("/users/100", { age: null });

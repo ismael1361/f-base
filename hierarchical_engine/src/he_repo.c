@@ -140,6 +140,20 @@ void he_repo_delete_subtree(HeStmtCache *cache, const char *prefix)
   sqlite3_step(del);
 }
 
+/// Deleta o nó EXATO e seu subtree, com fronteira de segmento '/' —
+/// diferente de delete_subtree(prefix), que varre [prefix, prefix+1) e
+/// alcança chaves irmãs com prefixo de texto comum quando chamado sem o
+/// '/' final (ex.: "user" → upper "uses" → apagava "username").
+void he_repo_delete_exact_subtree(HeStmtCache *cache, const char *path)
+{
+  if (!path || path[0] == '\0')
+    return;
+  sqlite3_stmt *del = cache->delete_exact;
+  sqlite3_reset(del);
+  sqlite3_bind_text(del, 1, path, -1, SQLITE_STATIC);
+  sqlite3_step(del);
+}
+
 /// Garante que todos os paths intermediários entre "/" e o documento existam.
 /// Ex: doc_id = "users/100" → cria "/" (se não existir), "/users/", "/users/100/"
 void he_repo_ensure_intermediate_paths(HeStmtCache *cache, const char *doc_id)

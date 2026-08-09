@@ -54,10 +54,13 @@ void wildcard_fixed_prefix(const char *pattern_path, char *out, size_t out_size)
  * STRINGS JSON
  * ===========================================================================
  */
-/* Escapa uma string raw para o formato JSON com aspas: `"raw content"` */
-void json_escape_string(char *buf, size_t buf_size, const char *raw);
-/* Faz o unescape de uma string JSON com aspas: `"escaped"` → raw */
-void json_unescape_string(const char *quoted, char *buf, size_t buf_size);
+/* Escapa uma string raw para JSON com aspas — alocação EXATA via
+ * sqlite3_malloc (sem limite: o antigo buffer fixo de 1KB truncava
+ * strings longas silenciosamente). Caller libera com sqlite3_free. */
+char *json_escape_string_alloc(const char *raw);
+/* Unescape de string JSON com aspas — alocação EXATA via sqlite3_malloc
+ * (o antigo buffer de 2KB também truncava). Caller libera com sqlite3_free. */
+char *json_unescape_string_alloc(const char *quoted);
 
 /* ===========================================================================
  * VALORES (yyjson ↔ storage)
@@ -65,9 +68,29 @@ void json_unescape_string(const char *quoted, char *buf, size_t buf_size);
  */
 /* Verifica se um valor JSON pode ser armazenado inline no nó pai */
 bool value_fits_inline(void *val, size_t max_inline_size);
-/* Serializa um primitivo para text_value (preenche *out_type) */
-void serialize_primitive_value(void *val, char *buf, size_t buf_size, int *out_type);
-/* Reconstrói um yyjson_mut_val* a partir de (type, text_value) armazenados */
+/* Serializa um primitivo para text_value (preenche *out_type) com
+ * alocação DINÂMICA via sqlite3_malloc (sem limite de tamanho — o
+ * buffer fixo truncava). Caller libera com sqlite3_free. */
+char *serialize_primitive_value_alloc(void *val, int *out_type);
+/* Reconstrói um yyjson_mut_val* a partir de (type, text_value) armazenados
+ * (type=2 — antigo TYPE_ARRAY — é tratado como objeto para compat de
+ * migração de dados legados). */
 void *make_value_from_storage(void *doc, int type, const char *text_val);
+
+/* ===========================================================================
+ * PROJEÇÃO (include/exclude)
+ * ===========================================================================
+ */
+/* Parseia o JSON de opções `{"include":[...],"exclude":[...]}` (paths
+ * pontilhados) para um HeProjection. options_root NULL ou sem os campos →
+ * projeção vazia (nenhum filtro). Slots excedentes são ignorados. */
+void he_projection_parse(void *options_root, HeProjection *proj);
+
+/* Copia src (yyjson_val*) para um yyjson_mut_val* no doc aplicando a
+ * projeção include/exclude (exclude vence include; caminhos pontilhados
+ * preservam os ancestrais como containers de passagem). Com projeção vazia
+ * é um deep-copy idêntico a yyjson_val_mut_copy (fast path, zero overhead).
+ * Objetos que ficam sem nenhuma chave são mantidos como "{}". */
+void *he_project_value(void *doc, void *src, const HeProjection *proj);
 
 #endif /* HE_UTILS_H */

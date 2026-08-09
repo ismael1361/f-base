@@ -109,7 +109,39 @@ cp yyjson/src/yyjson.h .
 
 ---
 
-## 🚀 Como Compilar
+## 📐 Contrato de Coleções (modelo Firebase — objeto-only)
+
+**O modelo é OBJETO-ONLY: arrays do JSON de entrada viram objetos com
+chaves únicas (UUID/push ID, estilo Firebase).** Não existe `TYPE_ARRAY` no
+type system (o valor `2` é reservado apenas para dados LEGADOS gravados por
+versões antigas — leitores o tratam como objeto para compat de migração).
+
+```json
+// JSON de entrada (array literal):
+{ "tags": ["genius", "computer"] }
+
+// Storage (tabela nodes) — container OBJECT + filhos com chave UUID:
+//   /users/100/tags/        type=1 (OBJECT) text_value="{}"
+//   /users/100/tags/a0e4b22b6cc94ca4ad3a6bb5026fdfd7  type=5  text_value="\"genius\""
+//   /users/100/tags/c3befaa1a88b487eb5178e663eb9c15a  type=5  text_value="\"computer\""
+```
+
+Na **leitura**, o container é reconstruído como **objeto** com as chaves UUID
+(`get()` NUNCA devolve array — sempre objeto). As chaves são
+**não-determinísticas** (geradas no write), portanto:
+
+- **Não confie em ordem ou nomes de chave** de uma coleção — use
+  `Object.values()`/`query()` para iteração.
+- **Chaves nomeadas** são criação explícita: grave um **objeto** com as chaves
+  desejadas (`{ "item_01": "a", "item_03": 400 }`) — preservadas na leitura.
+- `null` em array é pulado (skip, sem reindexação — não há índice).
+- Elementos inline (`max_inline_size > 0`) ficam no `text_value` do container
+  como objeto `{"<uuid>":"a", ...}`.
+- `searchByPath`/CSV expõem os paths com as chaves UUID.
+
+---
+
+## �🚀 Como Compilar
 
 ### Passo 1: Verificar estrutura de arquivos
 

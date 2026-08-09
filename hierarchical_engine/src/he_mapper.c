@@ -21,7 +21,10 @@ extern const sqlite3_api_routines *sqlite3_api;
 #include "he_stmt_cache.h"
 
 /* ===========================================================================
- * FLATTEN_AND_INSERT (recursivo) — com inline optimization + UUID arrays
+ * FLATTEN_AND_INSERT (recursivo) — com inline optimization + chaves únicas
+ * em coleções (modelo Firebase objeto-only): arrays do JSON de entrada viram
+ * objetos com chaves UUID (push ID) — NUNCA arrays; o storage só conhece
+ * objetos (TYPE_OBJECT).
  * ===========================================================================
  */
 
@@ -88,11 +91,9 @@ void he_mapper_flatten_value(HeStmtCache *cache, void *node_ptr,
         }
         else if (yyjson_is_obj(val) || yyjson_is_arr(val))
         {
-          // vazio
-          if (yyjson_is_obj(val))
-            yyjson_mut_obj_add_obj(inline_doc, inline_obj, k);
-          else
-            yyjson_mut_obj_add_arr(inline_doc, inline_obj, k);
+          // Container vazio → OBJETO vazio (modelo objeto-only: não existe
+          // array no storage — array vazio também vira objeto vazio)
+          yyjson_mut_obj_add_obj(inline_doc, inline_obj, k);
         }
         has_inline = true;
       }
@@ -110,16 +111,18 @@ void he_mapper_flatten_value(HeStmtCache *cache, void *node_ptr,
         else if (yyjson_is_arr(val))
         {
           strncat(current_path, "/", sizeof(current_path) - strlen(current_path) - 1);
-          he_repo_insert_node_rev(cache, current_path, TYPE_ARRAY, "{}", revision, revision_nr, 0);
+          he_repo_insert_node_rev(cache, current_path, TYPE_OBJECT, "{}", revision, revision_nr, 0);
           he_mapper_flatten_array_as_object(cache, val, current_path, revision, revision_nr, max_inline_size);
         }
         else
         {
-          // Primitivo dedicado (string longa)
+          // Primitivo dedicado (string longa) — serialização DINÂMICA
+          // (o buffer fixo de 1KB truncava strings > ~1KB silenciosamente)
           int prim_type;
-          char text_buf[1024];
-          serialize_primitive_value(val, text_buf, sizeof(text_buf), &prim_type);
-          he_repo_insert_node_rev(cache, current_path, prim_type, text_buf, revision, revision_nr, 0);
+          char *text_buf = serialize_primitive_value_alloc(val, &prim_type);
+          he_repo_insert_node_rev(cache, current_path, prim_type, text_buf,
+                                  revision, revision_nr, 0);
+          sqlite3_free(text_buf);
         }
       }
     }
@@ -153,12 +156,17 @@ void he_mapper_flatten_value(HeStmtCache *cache, void *node_ptr,
   }
   else if (yyjson_is_arr(node))
   {
-    // Array → objeto com chaves UUID
+    // Array → objeto com chaves UUID (modelo Firebase objeto-only): arrays
+    // do JSON de entrada viram objetos com chaves únicas; o storage só
+    // conhece objetos. O leitor devolve objeto (nunca array).
     he_mapper_flatten_array_as_object(cache, node, parent_path, revision, revision_nr, max_inline_size);
   }
 }
 
-/// Achata um array usando índices numéricos.
+/// Achata um array como objeto com chaves UUID (push ID estilo Firebase).
+/// Cada elemento vira um filho do container (path = parent_path + uuid) ou
+/// um inline child (text_value do pai) com a MESMA chave UUID. null é
+/// pulado (sem reindexação — não há índice).
 void he_mapper_flatten_array_as_object(HeStmtCache *cache, void *arr_ptr,
                                        const char *parent_path,
                                        const char *revision, int revision_nr,
@@ -169,8 +177,7 @@ void he_mapper_flatten_array_as_object(HeStmtCache *cache, void *arr_ptr,
   yyjson_arr_iter_init(arr, &iter);
   yyjson_val *val;
   char current_path[2048];
-  char idx_key[64];
-  int idx = 0;
+  char uuid_key[UUID_STR_LEN];
 
   // Coleta inline children em JSON temporário
   yyjson_mut_doc *inline_doc = NULL;
@@ -178,17 +185,20 @@ void he_mapper_flatten_array_as_object(HeStmtCache *cache, void *arr_ptr,
 
   while ((val = yyjson_arr_iter_next(&iter)))
   {
-    snprintf(idx_key, sizeof(idx_key), "%d", idx);
-
     if (yyjson_is_null(val))
-    {
-      idx++;
-      continue; // null em array: skip (Firebase behavior)
-    }
+      continue; // null em array: skip (Firebase behavior — sem índice)
+
+    // Chave única por elemento (push ID): gera ANTES de decidir inline,
+    // para inline e dedicado usarem a mesma chave.
+    generate_uuid_v4(uuid_key, sizeof(uuid_key));
 
     if (value_fits_inline(val, max_inline_size))
     {
-      // Inline: adiciona ao JSON do pai
+      // Inline: adiciona ao JSON do pai. ⚠️ A chave (uuid_key) é um buffer
+      // local: o yyjson_mut_obj_add_* armazena o PONTEIRO sem copiar
+      // (yyjson.h yyjson_mut_obj_add_func) — copiar a chave para o doc
+      // (yyjson_mut_strcpy) é OBRIGATÓRIO, senão todas as chaves inline
+      // apontam para o mesmo buffer e colidem na serialização.
       if (!inline_doc)
       {
         inline_doc = yyjson_mut_doc_new(NULL);
@@ -196,37 +206,37 @@ void he_mapper_flatten_array_as_object(HeStmtCache *cache, void *arr_ptr,
         yyjson_mut_doc_set_root(inline_doc, inline_obj);
       }
 
+      yyjson_mut_val *key_val = yyjson_mut_strcpy(inline_doc, uuid_key);
       if (yyjson_is_str(val))
       {
-        yyjson_mut_obj_add_str(inline_doc, inline_obj, idx_key, yyjson_get_str(val));
+        yyjson_mut_obj_add(inline_obj, key_val,
+                           yyjson_mut_strcpy(inline_doc, yyjson_get_str(val)));
       }
       else if (yyjson_is_int(val))
       {
-        yyjson_mut_obj_add_int(inline_doc, inline_obj, idx_key, yyjson_get_sint(val));
+        yyjson_mut_obj_add(inline_obj, key_val,
+                           yyjson_mut_int(inline_doc, yyjson_get_sint(val)));
       }
       else if (yyjson_is_real(val))
       {
-        yyjson_mut_obj_add_real(inline_doc, inline_obj, idx_key, yyjson_get_real(val));
+        yyjson_mut_obj_add(inline_obj, key_val,
+                           yyjson_mut_real(inline_doc, yyjson_get_real(val)));
       }
       else if (yyjson_is_bool(val))
       {
-        yyjson_mut_obj_add_bool(inline_doc, inline_obj, idx_key, yyjson_get_bool(val));
+        yyjson_mut_obj_add(inline_obj, key_val,
+                           yyjson_mut_bool(inline_doc, yyjson_get_bool(val)));
       }
       else if (yyjson_is_obj(val) || yyjson_is_arr(val))
       {
-        yyjson_mut_val *empty;
-        if (yyjson_is_obj(val))
-          empty = yyjson_mut_obj(inline_doc);
-        else
-          empty = yyjson_mut_arr(inline_doc);
-        yyjson_mut_obj_add(inline_obj, yyjson_mut_strcpy(inline_doc, idx_key), empty);
+        // Objeto/array vazio → objeto vazio (modelo objeto-only)
+        yyjson_mut_obj_add(inline_obj, key_val, yyjson_mut_obj(inline_doc));
       }
-      idx++;
     }
     else
     {
       // Dedicado
-      snprintf(current_path, sizeof(current_path), "%s%s", parent_path, idx_key);
+      snprintf(current_path, sizeof(current_path), "%s%s", parent_path, uuid_key);
 
       if (yyjson_is_obj(val))
       {
@@ -237,17 +247,18 @@ void he_mapper_flatten_array_as_object(HeStmtCache *cache, void *arr_ptr,
       else if (yyjson_is_arr(val))
       {
         strncat(current_path, "/", sizeof(current_path) - strlen(current_path) - 1);
-        he_repo_insert_node_rev(cache, current_path, TYPE_ARRAY, "{}", revision, revision_nr, 0);
+        he_repo_insert_node_rev(cache, current_path, TYPE_OBJECT, "{}", revision, revision_nr, 0);
         he_mapper_flatten_array_as_object(cache, val, current_path, revision, revision_nr, max_inline_size);
       }
       else
       {
+        // Serialização DINÂMICA (o buffer fixo truncava strings longas)
         int prim_type;
-        char text_buf[1024];
-        serialize_primitive_value(val, text_buf, sizeof(text_buf), &prim_type);
-        he_repo_insert_node_rev(cache, current_path, prim_type, text_buf, revision, revision_nr, 0);
+        char *text_buf = serialize_primitive_value_alloc(val, &prim_type);
+        he_repo_insert_node_rev(cache, current_path, prim_type, text_buf,
+                                revision, revision_nr, 0);
+        sqlite3_free(text_buf);
       }
-      idx++;
     }
   }
 
@@ -263,7 +274,7 @@ void he_mapper_flatten_array_as_object(HeStmtCache *cache, void *arr_ptr,
   }
   else
   {
-    // Sem inline children: garante text_value = "{}" para arrays vazios
+    // Sem inline children: garante text_value = "{}" para coleções vazias
     he_repo_update_empty(cache, parent_path);
   }
 }

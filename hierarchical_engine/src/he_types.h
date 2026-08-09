@@ -16,12 +16,18 @@
 /* ===========================================================================
  * TYPE SYSTEM (alinhado com o MDE JavaScript em ivipbase)
  * ===========================================================================
- * TYPE_EMPTY=0, TYPE_OBJECT=1, TYPE_ARRAY=2, TYPE_NUMBER=3,
+ * TYPE_EMPTY=0, TYPE_OBJECT=1, TYPE_NUMBER=3,
  * TYPE_BOOLEAN=4, TYPE_STRING=5, TYPE_DATETIME=6, TYPE_BIGINT=7,
  * TYPE_BINARY=8, TYPE_REFERENCE=9
  *
+ * A arquitetura é OBJETO-ONLY: não existe TYPE_ARRAY (o valor 2 é
+ * reservado para dados LEGADOS gravados por versões antigas — leitores
+ * tratam type=2 como objeto para não corromper migração). Arrays do JSON
+ * de entrada viram objetos com chaves únicas (UUID/push ID, estilo
+ * Firebase): {"<uuid>": value, ...} — nunca arrays.
+ *
  * Convenção de paths:
- *   - Containers (OBJECT, ARRAY) terminam com '/'  → ex: "/users/100/"
+ *   - Containers (OBJECT) terminam com '/'  → ex: "/users/100/"
  *   - Primitivos NÃO terminam com '/'               → ex: "/users/100/name"
  *
  * text_value:
@@ -33,7 +39,7 @@
  */
 #define TYPE_EMPTY 0
 #define TYPE_OBJECT 1
-#define TYPE_ARRAY 2
+/* 2 = LEGADO (antigo TYPE_ARRAY) — NÃO usar em escritas novas */
 #define TYPE_NUMBER 3
 #define TYPE_BOOLEAN 4
 #define TYPE_STRING 5
@@ -67,7 +73,9 @@ typedef struct
  */
 typedef struct
 {
-  char key[256];     /* Campo para filtrar (suporta notação aninhada: "address.city") */
+  char key[256];        /* Campo para filtrar (suporta notação aninhada: "address.city") */
+  char segments[8][64]; /* Segmentos da key pré-parseados (sem strtok no hot path) */
+  int seg_count;
   char op[16];       /* Operador: <, <=, ==, !=, >=, >, like, exists, in, between */
   char compare[512]; /* Valor para comparar (como string) */
   void *compare_val; /* Referência ao valor JSON parseado (yyjson_val*) */
@@ -77,6 +85,8 @@ typedef struct
 typedef struct
 {
   char key[256];
+  char segments[8][64]; /* Segmentos da key pré-parseados (sem strtok no hot path) */
+  int seg_count;
   bool ascending;
 } QueryOrder;
 
@@ -85,6 +95,26 @@ typedef struct
   void *val; /* yyjson_val* */
   size_t index;
 } SortEntry;
+
+/* ===========================================================================
+ * PROJEÇÃO (include/exclude de campos — caminhos pontilhados)
+ * ===========================================================================
+ * Caminhos no formato "chave" ou "a.b.c" (paridade com os filtros, que
+ * navegam por segmentos com '.'). Exclude SEMPRE vence include.
+ *   include vazio → sem whitelist (retorna tudo que não for excluído).
+ *   exclude vazio → sem blacklist.
+ * Para CSV/import por path, os mesmos slots guardam padrões wildcard
+ * de path (segmentos fixos e "*") — o interpretador decide como usar.
+ */
+#define HE_MAX_PROJ_KEYS 32
+
+typedef struct
+{
+  char include[HE_MAX_PROJ_KEYS][256];
+  int include_count;
+  char exclude[HE_MAX_PROJ_KEYS][256];
+  int exclude_count;
+} HeProjection;
 
 /* ===========================================================================
  * CSV (RFC 4180)

@@ -60,7 +60,13 @@ function countNodes(prefix: string): number {
   assert.ok(rev1.length > 0, "revision 1 não pode ser vazia");
   assert.equal(rev2, rev1, "conteúdo idêntico deve devolver a MESMA revision");
   assert.equal(countAfterSecond, countAfterFirst, "set idêntico não pode reescrever nós");
-  assert.deepEqual(ctx.store.get("/users/100"), doc, "conteúdo preservado");
+  // tags: array literal → objeto com chaves UUID (modelo objeto-only)
+  const got = ctx.store.get("/users/100") as any;
+  assert.equal(got.name, "Alice", "conteúdo preservado (name)");
+  assert.equal(got.age, 30, "conteúdo preservado (age)");
+  assert.ok(got.tags && !Array.isArray(got.tags), "tags deve ser objeto");
+  assert.equal(Object.keys(got.tags).length, 2);
+  assert.deepEqual(Object.values(got.tags).sort(), ["a", "b"], "conteúdo preservado (tags)");
 
   console.log("   ✅ Dedup passou (rev:", rev1.slice(0, 8) + "…)");
 }
@@ -229,11 +235,16 @@ function countNodes(prefix: string): number {
   ctx.store.set("/doc", { list: [1, 2, 3], nested: { k: "v" } });
 
   const first = ctx.store.get("/doc") as any;
-  first.list.push(999); // mutação do caller
+  // list é objeto com chaves UUID (modelo objeto-only) — mutação do caller
+  const lkeys = Object.keys(first.list);
+  (first.list as Record<string, number>)[lkeys[0]!] = 999;
   first.nested.k = "CORROMPIDO";
 
-  const second = ctx.store.get("/doc");
-  assert.deepEqual(second, { list: [1, 2, 3], nested: { k: "v" } }, "cada get devolve objeto novo");
+  const second = ctx.store.get("/doc") as any;
+  assert.ok(second.list && !Array.isArray(second.list), "list deve ser objeto");
+  assert.equal(Object.keys(second.list).length, 3, "list com 3 elementos");
+  assert.deepEqual(Object.values(second.list).sort(), [1, 2, 3], "valores não corrompidos");
+  assert.deepEqual(second.nested, { k: "v" }, "nested não corrompido");
 
   console.log("   ✅ Mutação-safe passou");
 }
@@ -250,7 +261,16 @@ function countNodes(prefix: string): number {
   ctx.store.get("/d"); // popula o cache
 
   ctx.store.set("/d", doc); // dedup → mesma revision → cache intacto
-  assert.deepEqual(ctx.store.get("/d"), doc, "get após dedup-skip retorna o conteúdo");
+  // a: array literal → objeto com chaves UUID (modelo objeto-only)
+  const got = ctx.store.get("/d") as any;
+  assert.equal(got.name, "X", "get após dedup-skip retorna o conteúdo (name)");
+  assert.equal(got.deep.b, "str", "get após dedup-skip retorna o conteúdo (b)");
+  assert.ok(got.deep.a && !Array.isArray(got.deep.a), "a deve ser objeto");
+  assert.deepEqual(
+    (Object.values(got.deep.a) as number[]).sort((x, y) => x - y),
+    [1, 2, 3],
+    "get após dedup-skip retorna o conteúdo (a)",
+  );
 
   console.log("   ✅ Dedup preserva cache passou");
 }
@@ -279,10 +299,21 @@ function countNodes(prefix: string): number {
   const i = ctx.store.get("/perf/inline") as any;
   assert.equal(d.field_199.value, 199);
   assert.equal(d.field_199.nested.y, 398);
-  assert.deepEqual(d.field_199.items, [199, 200, 201]);
+  // items: array literal → objeto com chaves UUID (modelo objeto-only)
+  assert.ok(d.field_199.items && !Array.isArray(d.field_199.items), "items deve ser objeto");
+  assert.deepEqual(
+    (Object.values(d.field_199.items) as number[]).sort((a, b) => a - b),
+    [199, 200, 201],
+    "items preservado",
+  );
   assert.equal(i.field_199.value, 199, "inline preserva value");
   assert.equal(i.field_199.nested.x, 199, "inline preserva nested.x");
-  assert.deepEqual(i.field_199.items, [199, 200, 201], "inline preserva items");
+  assert.ok(i.field_199.items && !Array.isArray(i.field_199.items), "inline items deve ser objeto");
+  assert.deepEqual(
+    (Object.values(i.field_199.items) as number[]).sort((a, b) => a - b),
+    [199, 200, 201],
+    "inline preserva items",
+  );
 
   console.log("   ✅ Batch contagem passou (default:", countDefault, "| inline:", countInline + ")");
 }
@@ -349,7 +380,12 @@ function countNodes(prefix: string): number {
 
   assert.equal(big.field_2999.value, 2999, "último campo correto");
   assert.equal(big.field_0.nested.y, 0, "primeiro campo correto");
-  assert.deepEqual(big.field_1500.items, [1500, 1501, 1502], "items correto");
+  assert.ok(big.field_1500.items && !Array.isArray(big.field_1500.items), "items deve ser objeto");
+  assert.deepEqual(
+    (Object.values(big.field_1500.items) as number[]).sort((a, b) => a - b),
+    [1500, 1501, 1502],
+    "items correto",
+  );
 
   // Guarda frouxa contra regressão O(n²) (o algoritmo antigo explodia aqui).
   // Em máquina de dev, o get (frio) fica em dezenas de ms — 8000ms só pega

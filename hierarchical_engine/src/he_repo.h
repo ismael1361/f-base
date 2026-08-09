@@ -71,6 +71,12 @@ int he_repo_get_type(HeStmtCache *cache, const char *path);
 /* Deleta todos os nós cujo path esteja no range [prefix, prefix+1) */
 void he_repo_delete_subtree(HeStmtCache *cache, const char *prefix);
 
+/* Deleta o nó EXATO (path = ?) e os descendentes delimitados por '/'
+ * (path >= ?||'/' AND path < ?||'0'). Nunca alcança chaves irmãs que
+ * apenas compartilham prefixo de texto (ex.: "user" vs "username").
+ * Necessário para deleções de chave no fast path de update_json. */
+void he_repo_delete_exact_subtree(HeStmtCache *cache, const char *path);
+
 /* Garante que todos os paths intermediários entre "/" e o documento existam. */
 void he_repo_ensure_intermediate_paths(HeStmtCache *cache, const char *doc_id);
 

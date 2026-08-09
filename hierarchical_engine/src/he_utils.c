@@ -444,62 +444,90 @@ void make_upper_bound(const char *prefix, char *upper, size_t up_size)
  * ===========================================================================
  */
 
-/// Escapa uma string raw para o formato JSON com aspas: `"raw content"`
-void json_escape_string(char *buf, size_t buf_size, const char *raw)
+/// Escapa uma string raw para o formato JSON com aspas: `"raw content"`.
+/// Alocação EXATA com sqlite3_malloc (SEM limite de tamanho — o antigo
+/// buffer fixo de 1KB TRUNCAVA strings longas silenciosamente: o valor era
+/// gravado cortado no meio, sem nenhum erro). Caller libera com sqlite3_free.
+char *json_escape_string_alloc(const char *raw)
 {
-  size_t i = 0, j = 1;
-  buf[0] = '"';
-  while (raw[i] != '\0' && j < buf_size - 2)
+  if (!raw)
+    raw = "";
+
+  // Passo 1: conta o tamanho necessário (aspas + escapes)
+  size_t need = 2;
+  for (const char *p = raw; *p; p++)
   {
-    switch (raw[i])
+    switch (*p)
     {
     case '"':
-      buf[j++] = '\\';
-      if (j < buf_size - 1)
-        buf[j++] = '"';
-      break;
     case '\\':
-      buf[j++] = '\\';
-      if (j < buf_size - 1)
-        buf[j++] = '\\';
-      break;
     case '\n':
-      buf[j++] = '\\';
-      if (j < buf_size - 1)
-        buf[j++] = 'n';
-      break;
     case '\r':
-      buf[j++] = '\\';
-      if (j < buf_size - 1)
-        buf[j++] = 'r';
-      break;
     case '\t':
-      buf[j++] = '\\';
-      if (j < buf_size - 1)
-        buf[j++] = 't';
+      need += 2;
       break;
     default:
-      buf[j++] = raw[i];
+      need += 1;
       break;
     }
-    i++;
   }
-  buf[j++] = '"';
-  buf[j] = '\0';
+  char *buf = sqlite3_malloc64(need + 1);
+  if (!buf)
+    return NULL;
+
+  // Passo 2: preenche (mesmo conjunto de escapes do original)
+  char *out = buf;
+  *out++ = '"';
+  for (const char *p = raw; *p; p++)
+  {
+    switch (*p)
+    {
+    case '"':
+      *out++ = '\\';
+      *out++ = '"';
+      break;
+    case '\\':
+      *out++ = '\\';
+      *out++ = '\\';
+      break;
+    case '\n':
+      *out++ = '\\';
+      *out++ = 'n';
+      break;
+    case '\r':
+      *out++ = '\\';
+      *out++ = 'r';
+      break;
+    case '\t':
+      *out++ = '\\';
+      *out++ = 't';
+      break;
+    default:
+      *out++ = *p;
+      break;
+    }
+  }
+  *out++ = '"';
+  *out = '\0';
+  return buf;
 }
 
-/// Faz o unescape de uma string JSON com aspas: `"escaped"` → raw
-void json_unescape_string(const char *quoted, char *buf, size_t buf_size)
+/// Faz o unescape de uma string JSON com aspas: `"escaped"` → raw.
+/// Alocação EXATA com sqlite3_malloc (o antigo buffer fixo de 2KB também
+/// truncava). Caller libera com sqlite3_free.
+char *json_unescape_string_alloc(const char *quoted)
 {
+  if (!quoted)
+    quoted = "";
   size_t len = strlen(quoted);
   if (len < 2 || quoted[0] != '"' || quoted[len - 1] != '"')
-  {
-    strncpy(buf, quoted, buf_size - 1);
-    buf[buf_size - 1] = '\0';
-    return;
-  }
+    return sqlite3_mprintf("%s", quoted);
+  // Unescaped <= quoted (escapes encolhem) — len+1 é sempre suficiente
+  char *buf = sqlite3_malloc64(len + 1);
+  if (!buf)
+    return NULL;
   size_t i, j;
-  for (i = 1, j = 0; i < len - 1 && j < buf_size - 1; i++)
+  for (i = 1, j = 0; i < len - 1; i++)
   {
     if (quoted[i] == '\\' && i + 1 < len - 1)
     {
@@ -523,8 +551,7 @@ void json_unescape_string(const char *quoted, char *buf, size_t buf_size)
         break;
       default:
         buf[j++] = '\\';
-        if (j < buf_size - 1)
-          buf[j++] = quoted[i];
+        buf[j++] = quoted[i];
         break;
       }
     }
@@ -534,6 +561,7 @@ void json_unescape_string(const char *quoted, char *buf, size_t buf_size)
     }
   }
   buf[j] = '\0';
+  return buf;
 }
 
 /* ===========================================================================
@@ -581,35 +609,34 @@ bool value_fits_inline(void *v, size_t max_inline_size)
  * ===========================================================================
  */
 
-/// Serializa um valor primitivo yyjson como texto para text_value
-void serialize_primitive_value(void *v, char *buf, size_t buf_size, int *out_type)
+/// Serializa um valor primitivo yyjson como texto para text_value.
+/// Alocação DINÂMICA com sqlite3_malloc (SEM limite — o antigo buffer fixo
+/// de 1KB TRUNCAVA strings longas). Caller libera com sqlite3_free.
+char *serialize_primitive_value_alloc(void *v, int *out_type)
 {
   yyjson_val *val = (yyjson_val *)v;
   if (yyjson_is_str(val))
   {
     *out_type = TYPE_STRING;
-    json_escape_string(buf, buf_size, yyjson_get_str(val));
+    return json_escape_string_alloc(yyjson_get_str(val));
   }
-  else if (yyjson_is_int(val))
+  if (yyjson_is_int(val))
   {
     *out_type = TYPE_NUMBER;
-    snprintf(buf, buf_size, "%lld", yyjson_get_sint(val));
+    return sqlite3_mprintf("%lld", yyjson_get_sint(val));
   }
-  else if (yyjson_is_real(val))
+  if (yyjson_is_real(val))
   {
     *out_type = TYPE_NUMBER;
-    snprintf(buf, buf_size, "%.17g", yyjson_get_real(val));
+    return sqlite3_mprintf("%.17g", yyjson_get_real(val));
   }
-  else if (yyjson_is_bool(val))
+  if (yyjson_is_bool(val))
   {
     *out_type = TYPE_BOOLEAN;
-    strcpy(buf, yyjson_get_bool(val) ? "true" : "false");
+    return sqlite3_mprintf("%s", yyjson_get_bool(val) ? "true" : "false");
   }
-  else
-  {
-    *out_type = TYPE_EMPTY;
-    buf[0] = '\0';
-  }
+  *out_type = TYPE_EMPTY;
+  return sqlite3_mprintf("");
 }
 
 /// Cria um mut_val a partir do type e text_value armazenados.
@@ -620,11 +647,16 @@ void *make_value_from_storage(void *doc_ptr, int type, const char *text_val)
   switch (type)
   {
   case TYPE_OBJECT:
+  case 2: /* LEGADO: antigo TYPE_ARRAY → objeto (compat de migração) */
   {
     yyjson_mut_val *obj = yyjson_mut_obj(doc);
     // Se há inline children, faz merge
     if (text_val && text_val[0] != '\0')
     {
+      // Fast path: container vazio ("{}") — sem parse de yyjson_read
+      // (o modo não-inline grava "{}" em TODOS os containers dedicados)
+      if (text_val[0] == '{' && text_val[1] == '}' && text_val[2] == '\0')
+        return obj;
       yyjson_doc *inline_doc = yyjson_read(text_val, strlen(text_val), 0);
       if (inline_doc)
       {
@@ -647,34 +679,6 @@ void *make_value_from_storage(void *doc_ptr, int type, const char *text_val)
     }
     return obj;
   }
-  case TYPE_ARRAY:
-  {
-    yyjson_mut_val *arr = yyjson_mut_arr(doc);
-    // Se há inline children, adiciona como elementos
-    if (text_val && text_val[0] != '\0')
-    {
-      yyjson_doc *inline_doc = yyjson_read(text_val, strlen(text_val), 0);
-      if (inline_doc)
-      {
-        yyjson_val *inline_root = yyjson_doc_get_root(inline_doc);
-        if (inline_root && yyjson_is_obj(inline_root))
-        {
-          // Inline children são armazenados como objeto no text_value
-          // Precisamos ordenar pelas chaves e adicionar como elementos
-          yyjson_obj_iter iter;
-          yyjson_obj_iter_init(inline_root, &iter);
-          yyjson_val *k, *v;
-          while ((k = yyjson_obj_iter_next(&iter)))
-          {
-            v = yyjson_obj_iter_get_val(k);
-            yyjson_mut_arr_append(arr, yyjson_val_mut_copy(doc, v));
-          }
-        }
-        yyjson_doc_free(inline_doc);
-      }
-    }
-    return arr;
-  }
   case TYPE_NUMBER:
     if (text_val)
     {
@@ -690,9 +694,11 @@ void *make_value_from_storage(void *doc_ptr, int type, const char *text_val)
   {
     if (text_val)
     {
-      char unesc[2048];
-      json_unescape_string(text_val, unesc, sizeof(unesc));
-      return yyjson_mut_strcpy(doc, unesc);
+      // Alocação dinâmica — o antigo buffer fixo (unesc[2048]) truncava
+      char *s = json_unescape_string_alloc(text_val);
+      yyjson_mut_val *v = yyjson_mut_strcpy(doc, s ? s : "");
+      sqlite3_free(s);
+      return v;
     }
     return yyjson_mut_strcpy(doc, "");
   }
@@ -702,5 +708,252 @@ void *make_value_from_storage(void *doc_ptr, int type, const char *text_val)
   case TYPE_REFERENCE:
   default:
     return yyjson_mut_strcpy(doc, text_val ? text_val : "");
+  }
+}
+
+/* ===========================================================================
+ * PROJEÇÃO (include/exclude de campos — caminhos pontilhados)
+ * ===========================================================================
+ */
+
+/// Classifica a relação entre um path da projeção e a chave atual:
+///   0 = sem relação; 1 = path == key (cópia inteira); 2 = path começa
+///   com "key." (precisa descer recursivamente).
+static int proj_match_kind(const char *path, const char *key, int key_len)
+{
+  if (strncmp(path, key, (size_t)key_len) != 0)
+    return 0;
+  char c = path[key_len];
+  if (c == '\0')
+    return 1;
+  if (c == '.')
+    return 2;
+  return 0;
+}
+
+/// Constrói a sub-projeção do ramo "key": mantém os paths que têm "key."
+/// como prefixo e os reescreve sem o prefixo.
+static void proj_descend(const HeProjection *src, const char *key, int key_len,
+                         HeProjection *dst)
+{
+  memset(dst, 0, sizeof(HeProjection));
+  for (int i = 0; i < src->include_count; i++)
+  {
+    if (proj_match_kind(src->include[i], key, key_len) == 2)
+    {
+      const char *suffix = src->include[i] + key_len + 1;
+      strncpy(dst->include[dst->include_count], suffix, 255);
+      dst->include[dst->include_count][255] = '\0';
+      dst->include_count++;
+    }
+  }
+  for (int i = 0; i < src->exclude_count; i++)
+  {
+    if (proj_match_kind(src->exclude[i], key, key_len) == 2)
+    {
+      const char *suffix = src->exclude[i] + key_len + 1;
+      strncpy(dst->exclude[dst->exclude_count], suffix, 255);
+      dst->exclude[dst->exclude_count][255] = '\0';
+      dst->exclude_count++;
+    }
+  }
+}
+
+/// Verifica se a sub-projeção (ex.: ["id"], ["a.b"]) casa com alguma
+/// CHAVE do objeto — caso em que o objeto é um container NOMEADO (desce por
+/// chave). Se nenhuma chave casa, o objeto é uma COLEÇÃO (objeto de objetos
+/// com chaves UUID geradas no flatten de array) e a sub-projeção deve ser
+/// aplicada aos VALORES (paridade com a projeção de arrays do modelo antigo).
+static bool proj_obj_has_field_match(const HeProjection *proj, yyjson_val *obj)
+{
+  for (int i = 0; i < proj->include_count; i++)
+  {
+    /* primeiro segmento do path (até o '.' ou fim) */
+    const char *p = proj->include[i];
+    size_t seg_len = 0;
+    while (p[seg_len] && p[seg_len] != '.')
+      seg_len++;
+    yyjson_obj_iter iter;
+    yyjson_obj_iter_init(obj, &iter);
+    yyjson_val *k;
+    while ((k = yyjson_obj_iter_next(&iter)))
+    {
+      size_t klen = yyjson_get_len(k);
+      if (klen == seg_len && strncmp(yyjson_get_str(k), p, seg_len) == 0)
+        return true;
+    }
+  }
+  for (int i = 0; i < proj->exclude_count; i++)
+  {
+    const char *p = proj->exclude[i];
+    size_t seg_len = 0;
+    while (p[seg_len] && p[seg_len] != '.')
+      seg_len++;
+    yyjson_obj_iter iter;
+    yyjson_obj_iter_init(obj, &iter);
+    yyjson_val *k;
+    while ((k = yyjson_obj_iter_next(&iter)))
+    {
+      size_t klen = yyjson_get_len(k);
+      if (klen == seg_len && strncmp(yyjson_get_str(k), p, seg_len) == 0)
+        return true;
+    }
+  }
+  return false;
+}
+
+/// Copia src aplicando a projeção (exclude vence include). Objetos que
+/// perdem todas as chaves viram "{}"; arrays são projetados elemento a
+/// elemento com a MESMA projeção (chaves de objetos dentro de arrays).
+void *he_project_value(void *doc_ptr, void *src_ptr, const HeProjection *proj)
+{
+  yyjson_mut_doc *doc = (yyjson_mut_doc *)doc_ptr;
+  yyjson_val *src = (yyjson_val *)src_ptr;
+
+  // Fast path: projeção vazia → deep-copy idêntico ao comportamento atual
+  if (!proj || (proj->include_count == 0 && proj->exclude_count == 0))
+    return yyjson_val_mut_copy(doc, src);
+
+  if (yyjson_is_obj(src))
+  {
+    yyjson_mut_val *out = yyjson_mut_obj(doc);
+    yyjson_obj_iter iter;
+    yyjson_obj_iter_init(src, &iter);
+    yyjson_val *k, *v;
+    while ((k = yyjson_obj_iter_next(&iter)))
+    {
+      v = yyjson_obj_iter_get_val(k);
+      const char *key = yyjson_get_str(k);
+      size_t klen = yyjson_get_len(k);
+      if (klen > 255)
+        klen = 255;
+      int key_len = (int)klen;
+
+      // Include: sem whitelist → mantém; com whitelist → só se casar
+      int inc = 0;
+      for (int i = 0; i < proj->include_count && inc != 1; i++)
+      {
+        int kind = proj_match_kind(proj->include[i], key, key_len);
+        if (kind > inc)
+          inc = kind;
+      }
+      // Exclude: vence include (exato remove; prefixo desce e poda)
+      int exc = 0;
+      for (int i = 0; i < proj->exclude_count && exc != 1; i++)
+      {
+        int kind = proj_match_kind(proj->exclude[i], key, key_len);
+        if (kind > exc)
+          exc = kind;
+      }
+
+      if (exc == 1)
+        continue; /* exclude exato → remove a chave inteira */
+      if (proj->include_count > 0 && inc == 0)
+        continue; /* whitelist sem match → remove */
+
+      yyjson_mut_val *copy;
+      if (inc == 2 || exc == 2)
+      {
+        HeProjection sub;
+        proj_descend(proj, key, key_len, &sub);
+        // Coleção (objeto de objetos com chaves UUID): a sub-projeção não
+        // casa com as chaves → aplicar aos VALORES, preservando as chaves.
+        // Ex.: include ["members.id"] → members: {uuid:{id}, uuid:{id}}.
+        if (yyjson_is_obj(v) && !proj_obj_has_field_match(&sub, v))
+        {
+          yyjson_mut_val *coll = yyjson_mut_obj(doc);
+          yyjson_obj_iter citer;
+          yyjson_obj_iter_init(v, &citer);
+          yyjson_val *ck, *cv;
+          while ((ck = yyjson_obj_iter_next(&citer)))
+          {
+            cv = yyjson_obj_iter_get_val(ck);
+            yyjson_mut_val *copy_val = he_project_value(doc, cv, &sub);
+            if (copy_val)
+              yyjson_mut_obj_add(coll,
+                                 yyjson_mut_strcpy(doc, yyjson_get_str(ck)),
+                                 copy_val);
+          }
+          copy = coll;
+        }
+        else
+        {
+          copy = he_project_value(doc, v, &sub);
+        }
+        if (!copy)
+          continue;
+      }
+      else
+      {
+        copy = yyjson_val_mut_copy(doc, v);
+      }
+      yyjson_mut_obj_add(out, yyjson_mut_strncpy(doc, key, klen), copy);
+    }
+    return out;
+  }
+
+  if (yyjson_is_arr(src))
+  {
+    yyjson_mut_val *out = yyjson_mut_arr(doc);
+    size_t n = yyjson_arr_size(src);
+    for (size_t i = 0; i < n; i++)
+    {
+      yyjson_val *item = yyjson_arr_get(src, i);
+      yyjson_mut_val *copy = (yyjson_is_obj(item) || yyjson_is_arr(item))
+                                 ? he_project_value(doc, item, proj)
+                                 : yyjson_val_mut_copy(doc, item);
+      yyjson_mut_arr_append(out, copy);
+    }
+    return out;
+  }
+
+  return yyjson_val_mut_copy(doc, src);
+}
+
+/// Parseia o JSON de opções `{"include":[...],"exclude":[...]}` (arrays de
+/// strings com caminhos pontilhados ou padrões wildcard de path).
+void he_projection_parse(void *options_ptr, HeProjection *proj)
+{
+  memset(proj, 0, sizeof(HeProjection));
+  yyjson_val *options = (yyjson_val *)options_ptr;
+  if (!options || !yyjson_is_obj(options))
+    return;
+
+  yyjson_val *inc = yyjson_obj_get(options, "include");
+  if (inc && yyjson_is_arr(inc))
+  {
+    size_t n = yyjson_arr_size(inc);
+    for (size_t i = 0; i < n && proj->include_count < HE_MAX_PROJ_KEYS; i++)
+    {
+      yyjson_val *item = yyjson_arr_get(inc, i);
+      if (yyjson_is_str(item))
+      {
+        const char *s = yyjson_get_str(item);
+        size_t len = yyjson_get_len(item);
+        size_t cp = len < 255 ? len : 255;
+        memcpy(proj->include[proj->include_count], s, cp);
+        proj->include[proj->include_count][cp] = '\0';
+        proj->include_count++;
+      }
+    }
+  }
+
+  yyjson_val *exc = yyjson_obj_get(options, "exclude");
+  if (exc && yyjson_is_arr(exc))
+  {
+    size_t n = yyjson_arr_size(exc);
+    for (size_t i = 0; i < n && proj->exclude_count < HE_MAX_PROJ_KEYS; i++)
+    {
+      yyjson_val *item = yyjson_arr_get(exc, i);
+      if (yyjson_is_str(item))
+      {
+        const char *s = yyjson_get_str(item);
+        size_t len = yyjson_get_len(item);
+        size_t cp = len < 255 ? len : 255;
+        memcpy(proj->exclude[proj->exclude_count], s, cp);
+        proj->exclude[proj->exclude_count][cp] = '\0';
+        proj->exclude_count++;
+      }
+    }
   }
 }

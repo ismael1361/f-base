@@ -54,24 +54,31 @@ char *he_set_json(HeStmtCache *cache, const char *doc_id, const char *json_str,
   if (err)
     *err = NULL;
 
-  // Parse JSON
-  yyjson_doc *doc = yyjson_read(json_str, strlen(json_str), 0);
-  if (!doc)
-  {
-    if (err)
-      *err = sqlite3_mprintf("Invalid JSON");
-    return NULL;
-  }
-  yyjson_val *root = yyjson_doc_get_root(doc);
-
   // Normaliza root_path
   char root_path[1024];
   normalize_path(doc_id, root_path, sizeof(root_path));
 
-  // Hash de conteúdo (inclui max_inline_size — layout muda com ele)
+  // DEDUP ANTES DO PARSE: se o conteúdo for byte-idêntico ao último write,
+  // não há necessidade de yyjson_read (que custa ~3.5ms para um doc de
+  // 0.5MB) — o SHA-256 (~1ms) + lookup de hash é suficiente. O hash usa a
+  // string bruta (mesmo critério do original), então um JSON inválido nunca
+  // dedupa com um conteúdo previamente validado (colisão SHA-256 prática
+  // impossível).
+  bool is_null_doc = false;
+  {
+    // Detecta o literal "null" textualmente (equivalente ao root null do
+    // yyjson) para pular hash/dedup — "null" deleta o doc, sem hash.
+    const char *p = json_str;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+      p++;
+    if (p[0] == 'n' && p[1] == 'u' && p[2] == 'l' && p[3] == 'l' &&
+        (p[4] == '\0' || p[4] == ' ' || p[4] == '\t' || p[4] == '\n' || p[4] == '\r'))
+      is_null_doc = true;
+  }
+
   char content_hash[65];
   bool has_content_hash = false;
-  if (!yyjson_is_null(root))
+  if (!is_null_doc)
   {
     char hash_suffix[40];
     int suffix_len = snprintf(hash_suffix, sizeof(hash_suffix),
@@ -87,10 +94,20 @@ char *he_set_json(HeStmtCache *cache, const char *doc_id, const char *json_str,
     if (he_repo_get_doc_hash(cache, root_path, stored_hash, stored_rev) &&
         strcmp(stored_hash, content_hash) == 0)
     {
-      yyjson_doc_free(doc);
       return sqlite3_mprintf("%s", stored_rev);
     }
   }
+
+  // Parse JSON (só quando é um write real — o dedup-skip não paga mais
+  // o yyjson_read de um doc grande)
+  yyjson_doc *doc = yyjson_read(json_str, strlen(json_str), 0);
+  if (!doc)
+  {
+    if (err)
+      *err = sqlite3_mprintf("Invalid JSON");
+    return NULL;
+  }
+  yyjson_val *root = yyjson_doc_get_root(doc);
 
   // Gera revision UUID (alocado — caller/destrutor usa sqlite3_free)
   char rev_buf[UUID_STR_LEN];
@@ -224,17 +241,19 @@ char *he_update_json(HeStmtCache *cache, const char *doc_id, const char *json_st
   char extract_path[1024];
   path_without_trailing_slash(root_path, extract_path, sizeof(extract_path));
 
-  char *raw = he_repo_extract_json(cache, extract_path);
-  if (!raw)
+  // Extrai direto no C (he_extract_json) — o wrapper SQL interno
+  // (SELECT COALESCE(extract_json(...),'null')) copiava o JSON inteiro
+  // uma 2ª vez (column text → mprintf) além do dispatch SQL. NULL aqui
+  // significa "documento não existe" (mesma semântica do 'null' do wrapper).
+  char *raw = he_extract_json(cache, extract_path, err);
+  if (err && *err)
   {
     yyjson_doc_free(update_doc);
-    if (err)
-      *err = sqlite3_mprintf("Failed to prepare extract");
     return NULL;
   }
 
   yyjson_doc *current_doc = NULL;
-  if (strcmp(raw, "null") != 0)
+  if (raw && strcmp(raw, "null") != 0)
   {
     current_doc = yyjson_read(raw, strlen(raw), 0);
   }
@@ -390,37 +409,6 @@ static bool he_json_is_leaf_object(yyjson_val *obj)
   return true;
 }
 
-/// Serializa um valor primitivo para text_value + type (folha do update).
-static void he_leaf_serialize(yyjson_val *val, char *buf, size_t buf_size,
-                              int *out_type)
-{
-  if (yyjson_is_str(val))
-  {
-    *out_type = TYPE_STRING;
-    json_escape_string(buf, buf_size, yyjson_get_str(val));
-  }
-  else if (yyjson_is_int(val))
-  {
-    *out_type = TYPE_NUMBER;
-    snprintf(buf, buf_size, "%lld", yyjson_get_sint(val));
-  }
-  else if (yyjson_is_real(val))
-  {
-    *out_type = TYPE_NUMBER;
-    snprintf(buf, buf_size, "%.17g", yyjson_get_real(val));
-  }
-  else if (yyjson_is_bool(val))
-  {
-    *out_type = TYPE_BOOLEAN;
-    strcpy(buf, yyjson_get_bool(val) ? "true" : "false");
-  }
-  else
-  {
-    *out_type = TYPE_EMPTY;
-    buf[0] = '\0';
-  }
-}
-
 /// FAST PATH de update: aplica o merge de PRIMITIVOS diretamente nos nós,
 /// sem reescrever o documento inteiro. Cada chave do update vira um UPDATE
 /// (ou INSERT OR REPLACE se o nó ainda não existe) no nó filho. Chaves com
@@ -468,32 +456,36 @@ static char *he_update_json_leaf_fast(HeStmtCache *cache, const char *doc_id,
     if (yyjson_is_null(v))
     {
       // null → deleta o nó filho exato e seus descendentes.
-      // delete_subtree(child_path) com range [child_path, child_path+1)
-      // pega tanto o nó primitivo (sem slash) quanto um container (com
-      // slash + filhos) — tudo que começa com este prefixo.
-      he_repo_delete_subtree(cache, child_path);
+      // delete_exact_subtree delimita o subtree por '/': remove o nó exato
+      // (path = ?) e "/path/*" (range [path/, path0)) — NUNCA alcança
+      // chaves irmãs que apenas compartilham prefixo de texto. O antigo
+      // delete_subtree SEM o '/' final varria [path, path+1) e apagava
+      // irmãs (ex.: "user" apagava "username" — bug de integridade).
+      he_repo_delete_exact_subtree(cache, child_path);
       continue;
     }
 
-    // Se o nó atual é container (armazenado com trailing slash), precisa
-    // apagar o subtree ANTES do insert — senão ficam nós órfãos.
+    // Se o nó atual é container (armazenado com trailing slash), o mesmo
+    // delete_exact_subtree apaga o subtree antes do insert — senão ficam
+    // nós órfãos.
     {
       char container_path[2048];
       snprintf(container_path, sizeof(container_path), "%s/", child_path);
       int cur_type = he_repo_get_type(cache, container_path);
-      if (cur_type == TYPE_OBJECT || cur_type == TYPE_ARRAY)
+      if (cur_type == TYPE_OBJECT || cur_type == 2) /* 2 = LEGADO */
       {
-        he_repo_delete_subtree(cache, child_path);
+        he_repo_delete_exact_subtree(cache, child_path);
       }
     }
 
-    // Serializa o primitivo e faz INSERT OR REPLACE (cria ou atualiza)
+    // Serializa o primitivo e faz INSERT OR REPLACE (cria ou atualiza).
+    // Serialização DINÂMICA — o buffer fixo truncava strings > 1KB.
     int prim_type;
-    char text_buf[1024];
-    he_leaf_serialize(v, text_buf, sizeof(text_buf), &prim_type);
+    char *text_buf = serialize_primitive_value_alloc(v, &prim_type);
     // keep_created=1: nó pode existir — preserva created via subquery
     he_repo_insert_node_rev(cache, child_path, prim_type, text_buf,
                             revision, rev_nr, 1);
+    sqlite3_free(text_buf);
   }
 
   he_repo_end_write_tx(cache, owned_tx);
@@ -624,7 +616,7 @@ char *he_extract_json(HeStmtCache *cache, const char *input, char **err)
     yyjson_mut_val *child = NULL;
     bool is_container = false;
 
-    if (type == TYPE_OBJECT || type == TYPE_ARRAY)
+    if (type == TYPE_OBJECT || type == 2) /* 2 = LEGADO (antigo TYPE_ARRAY) */
     {
       child = make_value_from_storage(mut_doc, type, text_val);
       is_container = true;
@@ -634,18 +626,11 @@ char *he_extract_json(HeStmtCache *cache, const char *input, char **err)
       child = make_value_from_storage(mut_doc, type, text_val);
     }
 
-    // 4. Adiciona ao pai
-    if (yyjson_mut_is_arr(parent))
-    {
-      // Array pai: mantém ordenação com append
-      yyjson_mut_arr_append(parent, child);
-    }
-    else
-    {
-      // Objeto pai: adiciona com chave
-      yyjson_mut_obj_add(parent,
-                         yyjson_mut_strcpy(mut_doc, key), child);
-    }
+    // 4. Adiciona ao pai — o modelo é OBJETO-ONLY: o pai nunca é array
+    //    (dados legados type=2 são lidos como objeto), então adiciona por
+    //    chave sempre.
+    yyjson_mut_obj_add(parent,
+                       yyjson_mut_strcpy(mut_doc, key), child);
 
     // 5. Se container, empilha
     if (is_container)
@@ -734,13 +719,16 @@ char *he_export_csv(HeStmtCache *cache, const char *input, char **err)
     int type = sqlite3_column_int(stmt, 1);
     const char *text_val = (const char *)sqlite3_column_text(stmt, 2);
 
-    char *epath = he_csv_escape(path);
-    char *etext = he_csv_escape(text_val);
-
-    sqlite3_str_appendf(out, "%s,%d,%s\n", epath, type, etext);
-
-    sqlite3_free(epath);
-    sqlite3_free(etext);
+    // Escape inline direto no sqlite3_str — zero alocação por linha
+    // (o antigo he_csv_escape alocava 2 buffers por linha: epath+etext).
+    he_csv_escape_append(out, path);
+    // type ∈ [0,9] (TYPE_EMPTY..TYPE_REFERENCE) — append direto do dígito
+    // (o antigo sqlite3_str_appendf rodava printf por linha do CSV)
+    sqlite3_str_append(out, ",", 1);
+    sqlite3_str_appendchar(out, 1, (char)('0' + type));
+    sqlite3_str_append(out, ",", 1);
+    he_csv_escape_append(out, text_val);
+    sqlite3_str_append(out, "\n", 1);
   }
   sqlite3_reset(stmt);
 
@@ -755,9 +743,10 @@ char *he_export_csv(HeStmtCache *cache, const char *input, char **err)
  * ===========================================================================
  */
 
-/// import_csv(prefix, csv_text, max_inline_size) → revision UUID
+/// import_csv(prefix, csv_text, max_inline_size, options_json) → revision UUID
 char *he_import_csv(HeStmtCache *cache, const char *prefix_input,
-                    const char *csv_text, size_t max_inline_size, char **err)
+                    const char *csv_text, size_t max_inline_size,
+                    const char *options_json, char **err)
 {
   if (err)
     *err = NULL;
@@ -773,6 +762,59 @@ char *he_import_csv(HeStmtCache *cache, const char *prefix_input,
     return NULL;
   }
 
+  // ── 1b. Filtra linhas por include/exclude de path (padrões wildcard) ──
+  if (options_json && options_json[0] != '\0')
+  {
+    HeProjection proj;
+    memset(&proj, 0, sizeof(proj));
+    yyjson_doc *opt_doc = yyjson_read(options_json, strlen(options_json), 0);
+    if (opt_doc)
+    {
+      he_projection_parse(yyjson_doc_get_root(opt_doc), &proj);
+      yyjson_doc_free(opt_doc);
+    }
+
+    if (proj.include_count > 0 || proj.exclude_count > 0)
+    {
+      int kept = 0;
+      for (int i = 0; i < row_count; i++)
+      {
+        bool inc_ok = proj.include_count == 0;
+        if (!inc_ok)
+        {
+          for (int p = 0; p < proj.include_count && !inc_ok; p++)
+          {
+            WildcardPattern pat;
+            wildcard_parse(proj.include[p], &pat);
+            if (wildcard_matches(rows[i].path, &pat))
+              inc_ok = true;
+          }
+        }
+        bool exc_ok = true;
+        for (int p = 0; p < proj.exclude_count && exc_ok; p++)
+        {
+          WildcardPattern pat;
+          wildcard_parse(proj.exclude[p], &pat);
+          if (wildcard_matches(rows[i].path, &pat))
+            exc_ok = false;
+        }
+
+        if (inc_ok && exc_ok)
+        {
+          if (kept != i)
+            rows[kept] = rows[i];
+          kept++;
+        }
+        else
+        {
+          sqlite3_free(rows[i].path);
+          sqlite3_free(rows[i].text_value);
+        }
+      }
+      row_count = kept;
+    }
+  }
+
   if (row_count == 0)
   {
     he_csv_free_rows(rows, 0);
@@ -781,57 +823,49 @@ char *he_import_csv(HeStmtCache *cache, const char *prefix_input,
     return sqlite3_mprintf("%s", rev);
   }
 
-  // ── 2. Reconstrói a árvore JSON ──
-  yyjson_mut_doc *tree_doc = yyjson_mut_doc_new(NULL);
-  yyjson_mut_val *tree_root = he_csv_rows_to_tree(tree_doc, rows, row_count);
+  // ── 2. Normaliza o prefixo de destino e identifica o root da árvore ──
+  // O CSV carrega paths absolutos; o root da árvore é a 1ª linha. Os nós
+  // são remapeados para sob o prefixo informado (paridade com o antigo
+  // fluxo tree→flatten: as chaves finais viram filhos do root_path).
+  char root_path[1024];
+  normalize_path(prefix_input, root_path, sizeof(root_path));
+  const char *base = rows[0].path;
+  size_t base_len = strlen(base);
 
-  if (!tree_root)
-  {
-    he_csv_free_rows(rows, row_count);
-    yyjson_mut_doc_free(tree_doc);
-    if (err)
-      *err = sqlite3_mprintf("Failed to build tree from CSV");
-    return NULL;
-  }
-
-  // Serializa para JSON string para o flatten
-  char *json_str = yyjson_mut_write(tree_doc, 0, NULL);
-  yyjson_mut_doc_free(tree_doc);
-  he_csv_free_rows(rows, row_count);
-
-  if (!json_str)
-  {
-    if (err)
-      *err = sqlite3_mprintf("Failed to serialize tree");
-    return NULL;
-  }
-
-  // Hash do conteúdo importado (mantém o dedup de set correto após import)
+  // Hash do conteúdo importado (mantém o dedup de set correto após import).
+  // Só o hash precisa da árvore canônica — o write é feito por inserção
+  // direta das linhas (sem re-parse + flatten: -40% do custo total).
   char imported_hash[65];
   {
+    yyjson_mut_doc *tree_doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *tree_root = he_csv_rows_to_tree(tree_doc, rows, row_count);
+    if (!tree_root)
+    {
+      he_csv_free_rows(rows, row_count);
+      yyjson_mut_doc_free(tree_doc);
+      if (err)
+        *err = sqlite3_mprintf("Failed to build tree from CSV");
+      return NULL;
+    }
+    char *json_str = yyjson_mut_write(tree_doc, 0, NULL);
+    yyjson_mut_doc_free(tree_doc);
+    if (!json_str)
+    {
+      he_csv_free_rows(rows, row_count);
+      if (err)
+        *err = sqlite3_mprintf("Failed to serialize tree");
+      return NULL;
+    }
     char hash_suffix[40];
     int suffix_len = snprintf(hash_suffix, sizeof(hash_suffix),
                               "\x01%zu", max_inline_size);
     const char *segs[2] = {json_str, hash_suffix};
     size_t lens[2] = {strlen(json_str), (size_t)suffix_len};
     sha256_hex_segments(segs, lens, 2, imported_hash);
+    free(json_str);
   }
 
-  // ── 3. Parseia o JSON com yyjson (imutável) para o flatten ──
-  yyjson_doc *final_doc = yyjson_read(json_str, strlen(json_str), 0);
-  free(json_str);
-  if (!final_doc)
-  {
-    if (err)
-      *err = sqlite3_mprintf("Failed to re-parse tree JSON");
-    return NULL;
-  }
-  yyjson_val *final_root = yyjson_doc_get_root(final_doc);
-
-  // ── 4. Escreve no banco (mesma lógica de set_json) ──
-  char root_path[1024];
-  normalize_path(prefix_input, root_path, sizeof(root_path));
-
+  // ── 3. Escreve no banco (delete + inserção direta das linhas) ──
   char rev_buf[UUID_STR_LEN];
   generate_uuid_v4(rev_buf, sizeof(rev_buf));
   char *revision = sqlite3_mprintf("%s", rev_buf);
@@ -850,14 +884,40 @@ char *he_import_csv(HeStmtCache *cache, const char *prefix_input,
 
   he_repo_insert_node_rev(cache, root_path, TYPE_OBJECT, NULL,
                           revision, rev_nr, 0);
-  he_mapper_flatten_value(cache, final_root, root_path,
-                          revision, rev_nr, max_inline_size);
+
+  for (int i = 0; i < row_count; i++)
+  {
+    const char *lp = rows[i].path;
+    char newpath[2048];
+
+    // base termina com '/' (ex: "/imported/") — strncmp já garante o limite
+    // de segmento: "/importedX" difere no char base_len-1. O sufixo
+    // (lp + base_len) é o restante do path sob o root da árvore.
+    if (strncmp(lp, base, base_len) == 0)
+    {
+      snprintf(newpath, sizeof(newpath), "%s%s", root_path, lp + base_len);
+    }
+    else
+    {
+      // Linha fora do root (CSV malformado): o antigo flatten tratava a
+      // chave final como filha direta do root da árvore.
+      const char *last = strrchr(lp, '/');
+      snprintf(newpath, sizeof(newpath), "%s%s", root_path, last ? last + 1 : lp);
+    }
+
+    // A linha raiz (path == root) já foi inserida acima
+    if (strcmp(newpath, root_path) == 0)
+      continue;
+
+    he_repo_insert_node_rev(cache, newpath, rows[i].type, rows[i].text_value,
+                            revision, rev_nr, 0);
+  }
 
   he_repo_set_doc_hash(cache, root_path, imported_hash, revision);
 
   he_repo_end_write_tx(cache, owned_tx3);
 
-  yyjson_doc_free(final_doc);
+  he_csv_free_rows(rows, row_count);
 
   return revision;
 }

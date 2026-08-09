@@ -42,6 +42,7 @@ typedef struct
   sqlite3_stmt *update_text;  /* UPDATE {t}_nodes SET text_value=? WHERE path=? */
   sqlite3_stmt *update_empty; /* UPDATE {t}_nodes SET text_value='{}' WHERE path=? AND text_value IS NULL */
   sqlite3_stmt *delete_range; /* DELETE FROM {t}_nodes WHERE path>=? AND path<? */
+  sqlite3_stmt *delete_exact; /* DELETE ... path=? OR (path>=?||'/' AND path<?||'0') */
   sqlite3_stmt *revision;     /* SELECT revision_nr FROM {t}_nodes WHERE path = ? */
   sqlite3_stmt *type;         /* SELECT type FROM {t}_nodes WHERE path = ? */
   sqlite3_stmt *extract;      /* SELECT COALESCE(extract_json(?1),'null') */

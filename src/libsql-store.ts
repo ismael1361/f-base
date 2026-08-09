@@ -24,6 +24,34 @@ export interface QueryOptions {
   order?: QueryOrder[];
   skip?: number;
   take?: number;
+  /**
+   * Projeção de campos (caminhos pontilhados, ex.: `["name", "address.city"]`).
+   * Quando definido, SÓ estas chaves são devolvidas. Ancestrais de caminhos
+   * pontilhados viram containers de passagem (ex.: `["address.city"]` mantém
+   * `address` com apenas `city`). Vazio/omitido = sem whitelist.
+   */
+  include?: string[];
+  /**
+   * Projeção de campos (caminhos pontilhados). Remove estas chaves do
+   * resultado e SEMPRE vence `include`.
+   */
+  exclude?: string[];
+}
+
+/** Opções de projeção para leitura/importação de documentos. */
+export interface ProjectionOptions {
+  /** Só estas chaves (caminhos pontilhados). Vazio = sem whitelist. */
+  include?: string[];
+  /** Remove estas chaves (vence `include`). */
+  exclude?: string[];
+}
+
+/** Opções de filtro por path para `searchByPath` (glob por segmentos). */
+export interface PathFilterOptions {
+  /** Só paths que casam com pelo menos um padrão. `*` = 1 segmento, `**` = qualquer profundidade. */
+  include?: string[];
+  /** Remove paths que casam com qualquer padrão (vence `include`). */
+  exclude?: string[];
 }
 
 /** Header do CSV de exportação (alinhado com a constante C CSV_HEADER) */
@@ -48,6 +76,41 @@ function upperBound(prefix: string): string {
   if (prefix.length === 0) return "\uFFFF";
   const last = prefix.charCodeAt(prefix.length - 1);
   return prefix.slice(0, -1) + String.fromCharCode(last + 1);
+}
+
+/**
+ * Casa um path com um padrão glob por segmentos (paridade com o wildcard C):
+ * `*` casa UM segmento e `**` casa zero ou mais segmentos.
+ * Segmentos fixos casam por igualdade. Ignora trailing slash no path.
+ *
+ * @example
+ * ```ts
+ * pathMatchesGlob("/a/b/c", "/a/**")         // true (multi-segmento)
+ * pathMatchesGlob("/users/100", "/users/*")  // true (1 segmento)
+ * ```
+ */
+function pathMatchesGlob(path: string, pattern: string): boolean {
+  const segs = (path.startsWith("/") ? path : "/" + path).split("/").filter(Boolean);
+  const pats = (pattern.startsWith("/") ? pattern : "/" + pattern).split("/").filter(Boolean);
+  const memo = new Map<string, boolean>();
+  const match = (pi: number, si: number): boolean => {
+    const mk = pi + ":" + si;
+    const hit = memo.get(mk);
+    if (hit !== undefined) return hit;
+    let res: boolean;
+    if (pi === pats.length) {
+      res = si === segs.length;
+    } else if (pats[pi] === "**") {
+      res = match(pi + 1, si) || (si < segs.length && match(pi, si + 1));
+    } else if (pats[pi] === "*") {
+      res = si < segs.length && match(pi + 1, si + 1);
+    } else {
+      res = si < segs.length && pats[pi] === segs[si] && match(pi + 1, si + 1);
+    }
+    memo.set(mk, res);
+    return res;
+  };
+  return match(0, 0);
 }
 
 /**
@@ -77,6 +140,19 @@ export interface LibsqlStoreOptions {
    * ```
    */
   tableName?: string;
+
+  /**
+   * Cacheia o OBJETO já parseado no cache de leitura (default: false).
+   * Quando ativo, o cache-hit do `get` devolve a MESMA referência do objeto
+   * (zero JSON.parse — para um doc de 50k nós o parse custa ~10ms e o
+   * cache-hit cai para ~0.1ms). ⚠️ CONTRATO DE RISCO: o caller NÃO deve
+   * mutar o objeto devolvido — uma mutação corromperia o cache (o mesmo
+   * trade-off de qualquer cache de objetos). Com false (default), cada get
+   * devolve um objeto novo (JSON.parse) — mutações do caller são isoladas.
+   * A projeção (include/exclude) e os nós primitivos NÃO são afetados
+   * (continuam devolvendo objeto novo).
+   */
+  cacheObjects?: boolean;
 }
 
 /**
@@ -116,6 +192,8 @@ export class LibsqlHierarchicalStore {
   private stmtQuery: Database.Statement<unknown[]>;
   private stmtSearch: Database.Statement<unknown[]>;
   private stmtImportCsv: Database.Statement<unknown[]>;
+  private stmtImportCsvOpts: Database.Statement<unknown[]>;
+  private stmtProject: Database.Statement<unknown[]>;
   private stmtExportCsv: Database.Statement<unknown[]>;
   private stmtExportJson: Database.Statement<unknown[]>;
 
@@ -127,8 +205,9 @@ export class LibsqlHierarchicalStore {
    * de revision invalida o cache automaticamente — e o dedup do `set`
    * (mesmo conteúdo → mesma revision) preserva o cache.
    */
-  private readCache: Map<string, { rev: string | null; json: string | null }>;
+  private readCache: Map<string, { rev: string | null; json: string | null; obj?: unknown }>;
   private readonly readCacheSize: number;
+  private readonly cacheObjects: boolean;
 
   /**
    * @param db - Instância `Database` do libSQL (ver LibsqlEngine).
@@ -165,10 +244,13 @@ export class LibsqlHierarchicalStore {
     this.stmtQuery = db.prepare(t !== "" ? "SELECT query_json(?, ?, ?) AS json_data" : "SELECT query_json(?, ?) AS json_data");
     this.stmtSearch = db.prepare(`SELECT path, type, text_value FROM ${this.nodesTable} WHERE path >= ? AND path < ? ORDER BY path`);
     this.stmtImportCsv = db.prepare(t !== "" ? "SELECT import_csv(?, ?, ?)" : "SELECT import_csv(?, ?)");
+    this.stmtImportCsvOpts = db.prepare(t !== "" ? "SELECT import_csv(?, ?, ?, ?)" : "SELECT import_csv(?, ?, ?)");
+    this.stmtProject = db.prepare("SELECT project_json(?, ?) AS json_data");
     this.stmtExportCsv = db.prepare(t !== "" ? "SELECT export_csv(?, ?) AS csv_data" : "SELECT export_csv(?) AS csv_data");
     this.stmtExportJson = db.prepare(t !== "" ? "SELECT extract_json(?, ?) AS json_data" : "SELECT extract_json(?) AS json_data");
     this.readCacheSize = Math.max(0, Math.floor(options.readCacheSize ?? 64));
     this.readCache = new Map();
+    this.cacheObjects = options.cacheObjects ?? false;
   }
 
   /**
@@ -226,33 +308,62 @@ export class LibsqlHierarchicalStore {
    * JSON parseado sem re-extrair do banco (O(1) em vez do range scan de
    * todos os nós do documento).
    *
+   * Com `options` (include/exclude), a projeção roda na extensão C via
+   * `project_json` sobre o JSON completo — o cache NUNCA guarda JSON
+   * projetado, então o cache permanece coerente entre chamadas com e sem
+   * projeção (e o caminho sem options mantém o cache-hit ~O(1)).
+   *
    * @example
    * ```ts
    * const user = store.get("/users/100");
    * console.log(user.name); // "Alice"
+   * const light = store.get("/users/100", { exclude: ["password"] });
+   * const slim = store.get("/users/100", { include: ["name", "address.city"] });
    * ```
    */
-  public get<T = Record<string, unknown>>(prefix: string): T | null {
+  public get<T = Record<string, unknown>>(prefix: string, options?: ProjectionOptions): T | null {
     // Chave do cache: path do container raiz (normalizado com trailing slash)
     const key = prefix.endsWith("/") ? prefix : prefix + "/";
     const hasT = this.table !== "";
+    const optsJson = options && (options.include?.length || options.exclude?.length) ? JSON.stringify({ include: options.include, exclude: options.exclude }) : "";
 
     // 1 lookup B-tree: revision do container raiz (invalidação automática)
     const revRow = this.stmtGetRevision.get(key) as { revision: string | null } | undefined;
     if (revRow && revRow.revision !== null) {
       const hit = this.readCache.get(key);
       if (hit && hit.rev === revRow.revision) {
-        return hit.json !== null ? (JSON.parse(hit.json) as T) : null;
+        if (hit.json === null) return null;
+        if (optsJson !== "") return this.projectJsonData<T>(hit.json, optsJson);
+        // Cache-hit sem projeção: com cacheObjects devolve a MESMA referência
+        // (zero JSON.parse — o parse é o custo dominante do get em docs
+        // grandes: ~10ms de ~9.5ms). Com false (default), parseia de novo.
+        if (this.cacheObjects && hit.obj !== undefined) return hit.obj as T;
+        return JSON.parse(hit.json) as T;
       }
       const row = (hasT ? this.stmtGet.get(this.table, prefix) : this.stmtGet.get(prefix)) as { json_data: string | null } | undefined;
       const jsonData = row?.json_data ?? null;
-      this.cacheSet(key, { rev: revRow.revision, json: jsonData });
-      return jsonData !== null ? (JSON.parse(jsonData) as T) : null;
+      if (jsonData === null) {
+        this.cacheSet(key, { rev: revRow.revision, json: null });
+        return null;
+      }
+      if (optsJson !== "") {
+        this.cacheSet(key, { rev: revRow.revision, json: jsonData });
+        return this.projectJsonData<T>(jsonData, optsJson);
+      }
+      // Sem projeção: parseia UMA vez e (com cacheObjects) guarda e devolve
+      // a MESMA referência — o hit seguinte não re-parseia nem re-cria.
+      const parsed = JSON.parse(jsonData) as T;
+      this.cacheSet(key, {
+        rev: revRow.revision,
+        json: jsonData,
+        obj: this.cacheObjects ? (parsed as unknown) : undefined,
+      });
+      return parsed;
     }
 
     // Fallback (sem cache): o path pode apontar para um NÓ PRIMITIVO
     // (ex: "/users/100/name"), armazenado sem trailing slash — extract_json
-    // só reconstrói containers.
+    // só reconstrói containers. Projeção não se aplica a primitivos.
     if (prefix.endsWith("/")) return null;
     const node = this.stmtGetNode.get(prefix) as { type: number; text_value: string | null } | undefined;
     if (!node) return null;
@@ -264,13 +375,23 @@ export class LibsqlHierarchicalStore {
         return (text_value === "true") as unknown as T;
       case 5: // STRING (text_value é JSON escapado, ex: '"Alan"')
         return JSON.parse(text_value ?? '""') as T;
+      case 2: // LEGADO (antigo TYPE_ARRAY) — container sem trailing slash é
+        // inconsistente; retorna null em vez de corromper como string.
+        return null as unknown as T;
       default: // DATETIME/BIGINT/BINARY/REFERENCE/EMPTY
         return (text_value ?? null) as unknown as T;
     }
   }
 
+  /** Aplica a projeção include/exclude a um JSON completo (work na extensão C). */
+  private projectJsonData<T>(jsonData: string, optsJson: string): T | null {
+    const row = this.stmtProject.get(jsonData, optsJson) as { json_data: string | null } | undefined;
+    const projected = row?.json_data;
+    return projected !== null && projected !== undefined ? (JSON.parse(projected) as T) : null;
+  }
+
   /** Insere entrada no cache de leitura com eviction FIFO (limite de itens). */
-  private cacheSet(key: string, entry: { rev: string | null; json: string | null }): void {
+  private cacheSet(key: string, entry: { rev: string | null; json: string | null; obj?: unknown }): void {
     if (this.readCacheSize <= 0) return;
     if (this.readCache.size >= this.readCacheSize) {
       const first = this.readCache.keys().next().value;
@@ -315,8 +436,9 @@ export class LibsqlHierarchicalStore {
   }
 
   /**
-   * Executa uma consulta com filtros, ordenação e paginação nos filhos
-   * de um caminho. Use `/*` no final do path para coleção.
+   * Executa uma consulta com filtros, ordenação, paginação e projeção de
+   * campos (include/exclude) nos filhos de um caminho. Use `/*` no final
+   * do path para coleção.
    *
    * @example
    * ```ts
@@ -324,6 +446,8 @@ export class LibsqlHierarchicalStore {
    *   filters: [{ key: "age", op: ">", compare: 25 }],
    *   order: [{ key: "name", ascending: true }],
    *   take: 10,
+   *   include: ["name", "address.city"],
+   *   exclude: ["password"],
    * });
    * ```
    */
@@ -353,8 +477,19 @@ export class LibsqlHierarchicalStore {
    * Busca hierárquica raw usando prefix range indexado (range scan).
    * `path >= ? AND path < upperBound` usa a PRIMARY KEY (B-tree) com
    * certeza — mais eficiente que `LIKE ? || '%'` (concatenação runtime).
+   *
+   * Com `options`, filtra as linhas por padrões glob de path
+   * (`*` = 1 segmento, `**` = qualquer profundidade). Sem options,
+   * o caminho é idêntico ao atual (zero overhead).
+   *
+   * @example
+   * ```ts
+   * const all = store.searchByPath("/people/");
+   * const names = store.searchByPath("/people/", { include: ["/people/*"] });
+   * const semSenha = store.searchByPath("/users/", { exclude: ["/users/**"] });
+   * ```
    */
-  public searchByPath(pathPrefix: string): Array<{ path: string; type: number; text_value: string | null }> {
+  public searchByPath(pathPrefix: string, options: PathFilterOptions = {}): Array<{ path: string; type: number; text_value: string | null }> {
     // Ajusta o prefixo: se não termina com '/', adiciona para capturar descendentes
     const prefix = pathPrefix.endsWith("/") ? pathPrefix : pathPrefix + "/";
     const rows = this.stmtSearch.all(prefix, upperBound(prefix)) as Array<{
@@ -362,7 +497,15 @@ export class LibsqlHierarchicalStore {
       type: number;
       text_value: string | null;
     }>;
-    return rows;
+    const { include, exclude } = options;
+    if ((!include || include.length === 0) && (!exclude || exclude.length === 0)) {
+      return rows;
+    }
+    return rows.filter((r) => {
+      if (exclude && exclude.some((p) => pathMatchesGlob(r.path, p))) return false;
+      if (include && include.length > 0) return include.some((p) => pathMatchesGlob(r.path, p));
+      return true;
+    });
   }
 
   /**
@@ -371,21 +514,42 @@ export class LibsqlHierarchicalStore {
    * @param pathPrefix - Prefixo do caminho onde os dados serão importados.
    * @param data - Conteúdo a ser importado (Buffer ou Readable).
    * @param type - Tipo de dados ("json" ou "csv").
+   * @param options - Projeção: para JSON, caminhos pontilhados de campos
+   *   (ex.: `{ exclude: ["password"] }`); para CSV, padrões glob de path
+   *   das linhas (ex.: `{ include: ["/users/*"] }`).
    *
    * @example
    * ```ts
    * await store.import("/users", Buffer.from(JSON.stringify([sampleUser])), "json");
+   * await store.import("/users", buffer, "json", { exclude: ["password"] });
+   * await store.import("/users", csvBuffer, "csv", { exclude: ["/users/**"] });
    * ```
    */
-  public async import(pathPrefix: string, data: Buffer | Readable, type: "json" | "csv" = "json"): Promise<void> {
+  public async import(pathPrefix: string, data: Buffer | Readable, type: "json" | "csv" = "json", options: ProjectionOptions = {}): Promise<void> {
     const rawContent = await bufferFromReadable(data);
 
     if (type === "json") {
       const parsed = JSON.parse(rawContent.toString("utf-8"));
-      this.set(pathPrefix, parsed);
+      if (options.include?.length || options.exclude?.length) {
+        const jsonStr = JSON.stringify(parsed);
+        const projected = this.projectJsonData<unknown>(jsonStr, JSON.stringify({ include: options.include, exclude: options.exclude }));
+        this.set(pathPrefix, (projected ?? parsed) as Record<string, unknown>);
+      } else {
+        this.set(pathPrefix, parsed);
+      }
     } else {
       const csv = rawContent.toString("utf-8");
-      this.table !== "" ? this.stmtImportCsv.get(this.table, pathPrefix, csv) : this.stmtImportCsv.get(pathPrefix, csv);
+      if (options.include?.length || options.exclude?.length) {
+        const optsJson = JSON.stringify({ include: options.include, exclude: options.exclude });
+        this.table !== "" ? this.stmtImportCsvOpts.get(this.table, pathPrefix, csv, optsJson) : this.stmtImportCsvOpts.get(pathPrefix, csv, optsJson);
+      } else {
+        this.table !== "" ? this.stmtImportCsv.get(this.table, pathPrefix, csv) : this.stmtImportCsv.get(pathPrefix, csv);
+      }
+      // O import CSV escreve diretamente (sem passar por set) — o cache de
+      // leitura do destino e de TODOS os ancestrais fica stale (a revision
+      // do container raiz muda). Sem esta invalidação, um get logo após o
+      // import devolveria o JSON antigo em cache (bug observado em teste).
+      this.invalidateCacheKeys(pathPrefix.endsWith("/") ? pathPrefix : pathPrefix + "/");
     }
   }
 
