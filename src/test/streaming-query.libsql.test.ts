@@ -169,4 +169,45 @@ ctx = setupLibsql();
   console.log("   ✅ projeção + filtro (fallback) OK");
 }
 
+// ---------------------------------------------------------------------------
+// 08: paridade do operador "like" — streaming (sem order) vs fallback
+// (com order). Bug real: o streaming usava strstr com os % literais
+// ("%Genius%" retornava 0 itens no streaming vs 2 no fallback). A semântica
+// de % (substring/prefixo/sufixo/exato) DEVE ser idêntica nos dois caminhos.
+// ---------------------------------------------------------------------------
+{
+  beforeTest();
+  console.log("\n🧪 Streaming query 08 — like paridade (streaming vs fallback)");
+
+  ctx.store.set("/people/alice", { name: "Alice Genius", age: 25 });
+  ctx.store.set("/people/bob", { name: "Bob", age: 35 });
+  ctx.store.set("/people/carol", { name: "Carol Genius", age: 20 });
+
+  const byName = (opts: unknown) => (ctx.store.query("/people/*", opts as never) as Array<{ name: string }>).map((p) => p.name).sort();
+
+  // %x% → substring — streaming (sem order) e fallback (com order) idênticos
+  const subNoOrder = byName({ filters: [{ key: "name", op: "like", compare: "%Genius%" }] });
+  const subWithOrder = byName({ filters: [{ key: "name", op: "like", compare: "%Genius%" }], order: [{ key: "age" }] });
+  assert.deepEqual(subNoOrder, ["Alice Genius", "Carol Genius"], "like %x% (streaming)");
+  assert.deepEqual(subWithOrder, ["Alice Genius", "Carol Genius"], "like %x% (fallback)");
+
+  // x% → prefixo
+  const pre = byName({ filters: [{ key: "name", op: "like", compare: "A%" }] });
+  assert.deepEqual(pre, ["Alice Genius"], "like x% (streaming)");
+
+  // %x → sufixo
+  const suf = byName({ filters: [{ key: "name", op: "like", compare: "%Genius" }] });
+  assert.deepEqual(suf, ["Alice Genius", "Carol Genius"], "like %x (streaming)");
+
+  // Sem % → igualdade EXATA (NÃO substring)
+  const exact = byName({ filters: [{ key: "name", op: "like", compare: "Alice" }] });
+  assert.deepEqual(exact, [], "like sem % é igualdade exata (não substring)");
+
+  // Sem match → vazio (consistência entre caminhos)
+  const none = byName({ filters: [{ key: "name", op: "like", compare: "%zzz%" }], order: [{ key: "age" }] });
+  assert.deepEqual(none, [], "sem match (fallback)");
+
+  console.log("   ✅ like paridade OK");
+}
+
 console.log("✅ Suíte de streaming query concluída");

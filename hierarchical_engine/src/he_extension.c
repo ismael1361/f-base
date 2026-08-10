@@ -288,8 +288,10 @@ static void project_json_func(sqlite3_context *context, int argc,
   const char *options_str = (const char *)sqlite3_value_text(argv[1]);
   if (!options_str || options_str[0] == '\0')
   {
-    // Sem projeção → devolve o texto original (fast path)
-    sqlite3_result_text(context, json_text, -1, SQLITE_STATIC);
+    // Sem projeção → devolve o texto original (fast path). Cópia com
+    // sqlite3_mprintf (NUNCA SQLITE_STATIC com o ponteiro do argumento —
+    // o resultado não pode depender do ciclo de vida do argv).
+    finish_result(context, sqlite3_mprintf("%s", json_text), NULL);
     return;
   }
 

@@ -150,6 +150,59 @@ static void query_spec_parse(yyjson_val *query_root, HeQuerySpec *spec)
 }
 
 /* ===========================================================================
+ * OPERADOR LIKE (fnmatch-style com %) — COMPARTILHADO
+ * ===========================================================================
+ * Semântica do operador "like" do query engine: %x% = substring, x% =
+ * prefixo, %x = sufixo, sem % = igualdade exata. Usado por evaluate_filter
+ * (imutável — pipeline direto/fallback) E por evaluate_filter_mut
+ * (mutável — streaming). NUNCA implementar like como strstr literal dos %
+ * (o streaming retornaria resultados divergentes do fallback — bug real
+ * confirmado: "%Genius%" dava 0 itens no streaming vs 2 no fallback).
+ */
+static bool like_match(const char *str_val, const char *pattern)
+{
+  size_t clen = strlen(pattern);
+  size_t slen = strlen(str_val);
+  if (clen == 0)
+    return (slen == 0);
+  /* %x% → substring */
+  if (pattern[0] == '%' && pattern[clen - 1] == '%')
+  {
+    size_t sub_len = clen - 2;
+    char sub[256];
+    if (sub_len < sizeof(sub))
+    {
+      memcpy(sub, pattern + 1, sub_len);
+      sub[sub_len] = '\0';
+      return strstr(str_val, sub) != NULL;
+    }
+    return false;
+  }
+  /* %x → sufixo */
+  if (pattern[0] == '%')
+  {
+    const char *suffix = pattern + 1;
+    size_t sul = strlen(suffix);
+    return slen >= sul && strcmp(str_val + slen - sul, suffix) == 0;
+  }
+  /* x% → prefixo */
+  if (pattern[clen - 1] == '%')
+  {
+    size_t prefix_len = clen - 1;
+    if (prefix_len < 256)
+    {
+      char prefix[256];
+      memcpy(prefix, pattern, prefix_len);
+      prefix[prefix_len] = '\0';
+      return strncmp(str_val, prefix, prefix_len) == 0;
+    }
+    return false;
+  }
+  /* sem % → igualdade exata */
+  return strcmp(str_val, pattern) == 0;
+}
+
+/* ===========================================================================
  * AVALIAÇÃO DE FILTROS
  * ===========================================================================
  */
@@ -248,48 +301,7 @@ static bool evaluate_filter(yyjson_val *obj, QueryFilter *filter)
     if (strcmp(op, "!=") == 0)
       return strcmp(str_val, filter->compare) != 0;
     if (strcmp(op, "like") == 0)
-    {
-      // like: converte % para .* e faz regex (simplificado: fnmatch-style)
-      size_t clen = strlen(filter->compare);
-      size_t slen = strlen(str_val);
-      if (clen == 0)
-        return (slen == 0);
-      // Verifica match simples com % wildcard
-      if (filter->compare[0] == '%' && filter->compare[clen - 1] == '%')
-      {
-        // Extrai substring entre os % sem strndup
-        size_t sub_len = clen - 2;
-        char sub[256];
-        if (sub_len < sizeof(sub))
-        {
-          memcpy(sub, filter->compare + 1, sub_len);
-          sub[sub_len] = '\0';
-          bool match = strstr(str_val, sub) != NULL;
-          return match;
-        }
-        return false;
-      }
-      if (filter->compare[0] == '%')
-      {
-        const char *suffix = filter->compare + 1;
-        size_t sl = strlen(str_val);
-        size_t sul = strlen(suffix);
-        return sl >= sul && strcmp(str_val + sl - sul, suffix) == 0;
-      }
-      if (filter->compare[clen - 1] == '%')
-      {
-        size_t prefix_len = clen - 1;
-        if (prefix_len < 256)
-        {
-          char prefix[256];
-          memcpy(prefix, filter->compare, prefix_len);
-          prefix[prefix_len] = '\0';
-          return strncmp(str_val, prefix, prefix_len) == 0;
-        }
-        return false;
-      }
-      return strcmp(str_val, filter->compare) == 0;
-    }
+      return like_match(str_val, filter->compare);
     if (strcmp(op, "matches") == 0)
     {
       // regex match (simplificado: substring case-insensitive)
@@ -413,7 +425,7 @@ static bool evaluate_filter_mut(yyjson_mut_val *obj, QueryFilter *filter)
     if (strcmp(op, "!=") == 0)
       return strcmp(str_val, filter->compare) != 0;
     if (strcmp(op, "like") == 0)
-      return strstr(str_val, filter->compare) != NULL;
+      return like_match(str_val, filter->compare);
     if (strcmp(op, "matches") == 0)
       return strstr(str_val, filter->compare) != NULL;
     if (strcmp(op, "in") == 0 && compare_val && yyjson_is_arr(compare_val))
